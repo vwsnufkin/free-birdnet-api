@@ -20,12 +20,16 @@ def analyze_audio():
     if not upload:
         return {"error": "No audio file provided"}
 
-    # We now use a dedicated FOLDER for the output
+    # 🚨 NEW: Catch the GPS coordinates sent by your website! (Defaults to -1 if missing)
+    user_lat = request.forms.get('lat', '-1')
+    user_lon = request.forms.get('lon', '-1')
+    
+    print(f"🌍 Location data received: Lat {user_lat}, Lon {user_lon}", flush=True)
+
     raw_path = '/tmp/raw_upload'
     wav_path = '/tmp/recording.wav'
     out_dir = '/tmp/bird_results'
     
-    # Safely clean up old files and folders from previous runs
     if os.path.exists(raw_path): os.remove(raw_path)
     if os.path.exists(wav_path): os.remove(wav_path)
     if os.path.exists(out_dir): shutil.rmtree(out_dir) 
@@ -34,19 +38,20 @@ def analyze_audio():
     print("✅ Audio file saved to server. Converting format...", flush=True)
 
     try:
-        subprocess.run(["ffmpeg", "-y", "-i", raw_path, "-ar", "48000", wav_path], check=True, capture_output=True)
-        print("✅ Audio successfully converted to perfect WAV.", flush=True)
+        # We added a tiny volume boost (-filter:a volume=5dB) to help overcome speaker muffling
+        subprocess.run(["ffmpeg", "-y", "-i", raw_path, "-filter:a", "volume=5dB", "-ar", "48000", wav_path], check=True, capture_output=True)
+        print("✅ Audio successfully converted and volume boosted.", flush=True)
     except subprocess.CalledProcessError as e:
         return {"error": f"Audio Conversion Failed. Log: {e.stderr.decode()}"}
 
-    # Pass the FOLDER path (-o out_dir) instead of a file path
+    # 🚨 NEW: Pass the real coordinates to the AI so it filters out impossible foreign birds!
     cmd = [
         "python", "-m", "birdnet_analyzer.analyze",
         "-o", out_dir,
         "--rtype", "csv",
-        "--lat", "-1",
-        "--lon", "-1",
-        "--min_conf", "0.01",
+        "--lat", user_lat,
+        "--lon", user_lon,
+        "--min_conf", "0.01", 
         "--n_workers", "1", 
         wav_path 
     ]
@@ -61,14 +66,12 @@ def analyze_audio():
     except Exception as e:
         return {"error": str(e)}
 
-    # Trap the Cornell empty-list bug
     if "Columns must be same length as key" in process.stderr:
         print("✅ Cornell empty-result bug caught. Returning 0 birds.", flush=True)
         return {"results": []}
 
     results = []
     if os.path.exists(out_dir):
-        # Look inside the folder to find whatever .csv file Cornell generated
         csv_files = glob.glob(f"{out_dir}/*.csv")
         
         if csv_files:
