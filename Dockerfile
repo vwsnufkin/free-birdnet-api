@@ -4,12 +4,13 @@ FROM python:3.11-slim
 # Install system audio libraries required to read sound waves
 RUN apt-get update && apt-get install -y git ffmpeg libsndfile1 && rm -rf /var/lib/apt/lists/*
 
-# Download the Official Cornell BirdNET-Analyzer brain
+# Download the Official Cornell BirdNET-Analyzer
 RUN git clone https://github.com/birdnet-team/BirdNET-Analyzer.git /app
 WORKDIR /app
 
-# Install lightweight AI dependencies so it easily fits on Render's Free Tier
-RUN pip install --no-cache-dir tflite-runtime librosa bottle resampy scipy
+# The golden rule: Let Cornell's official installer handle the AI dependencies, 
+# and just add 'bottle' for our web server.
+RUN pip install --no-cache-dir . bottle
 
 # Copy our custom web server script from GitHub into the AI engine
 COPY server.py /app/server.py
