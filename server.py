@@ -12,16 +12,15 @@ def analyze_audio():
     if request.method == 'OPTIONS':
         return {}
 
-    # 2. Receive the audio and location from your website
+    # 2. Receive the audio from your website
     upload = request.files.get('audio')
-    lat = request.forms.get('lat', '-1')
-    lon = request.forms.get('lon', '-1')
     
     if not upload:
         response.status = 400
         return {"error": "No audio file provided"}
 
-    audio_path = '/tmp/recording.wav'
+    # FIX 1: Save as .webm so the AI engine correctly decodes the browser's hidden format
+    audio_path = '/tmp/recording.webm'
     out_path = '/tmp/result.csv'
     
     if os.path.exists(audio_path): os.remove(audio_path)
@@ -29,15 +28,16 @@ def analyze_audio():
         
     upload.save(audio_path)
 
-    # 3. Feed the audio into the official Cornell AI command line
+    # FIX 2: Set lat and lon to -1. This completely disables the geographic filter 
+    # so it will detect any bird in the world (great for testing with YouTube videos).
     cmd = [
         "python", "analyze.py",
         "--i", audio_path,
         "--o", out_path,
         "--rtype", "csv",
-        "--lat", str(lat),
-        "--lon", str(lon),
-        "--min_conf", "0.1"
+        "--lat", "-1",
+        "--lon", "-1",
+        "--min_conf", "0.05"  # Lowered the sensitivity threshold so it catches fainter sounds
     ]
     subprocess.run(cmd)
 
