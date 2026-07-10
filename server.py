@@ -12,7 +12,6 @@ def analyze_audio():
     if request.method == 'OPTIONS':
         return {}
 
-    # 🚨 DIAGNOSTIC 1: Did the request arrive?
     print("📡 Incoming audio request received!", flush=True)
 
     upload = request.files.get('audio')
@@ -30,7 +29,6 @@ def analyze_audio():
     upload.save(raw_path)
     print("✅ Audio file saved to server. Converting format...", flush=True)
 
-    # 🚨 DIAGNOSTIC 2: Did the audio convert safely?
     try:
         subprocess.run(["ffmpeg", "-y", "-i", raw_path, "-ar", "48000", wav_path], check=True, capture_output=True)
         print("✅ Audio successfully converted to perfect WAV.", flush=True)
@@ -38,7 +36,7 @@ def analyze_audio():
         print("❌ ffmpeg conversion failed!", flush=True)
         return {"error": f"Audio Conversion Failed. Log: {e.stderr.decode()}"}
 
-    # 🚨 DIAGNOSTIC 3: Launching the AI
+    # 🚨 FIX: Changed --threads to --n_workers to match Cornell's exact grammar
     cmd = [
         "python", "-m", "birdnet_analyzer.analyze",
         "-o", out_path,
@@ -46,14 +44,13 @@ def analyze_audio():
         "--lat", "-1",
         "--lon", "-1",
         "--min_conf", "0.05",
-        "--threads", "1", # Force low-memory mode
+        "--n_workers", "1", 
         wav_path 
     ]
     
     print(f"🚀 Launching Cornell AI engine...", flush=True)
     
     try:
-        # We put a 45-second stopwatch on the AI. If it freezes, we kill it and get an error!
         process = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
         print("✅ AI Engine finished processing.", flush=True)
     except subprocess.TimeoutExpired:
@@ -63,7 +60,6 @@ def analyze_audio():
         print(f"❌ AI Engine crashed: {e}", flush=True)
         return {"error": str(e)}
 
-    # 🚨 DIAGNOSTIC 4: Reading the final results
     results = []
     if os.path.exists(out_path):
         with open(out_path, 'r') as f:
