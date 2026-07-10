@@ -1,6 +1,7 @@
 import os
 import subprocess
 import csv
+import sys
 from bottle import route, run, request, response
 
 @route('/analyze', method=['OPTIONS', 'POST'])
@@ -11,11 +12,14 @@ def analyze_audio():
     if request.method == 'OPTIONS':
         return {}
 
+    # 🚨 DIAGNOSTIC 1: Did the request arrive?
+    print("📡 Incoming audio request received!", flush=True)
+
     upload = request.files.get('audio')
     if not upload:
+        print("❌ Error: No audio file found in request.", flush=True)
         return {"error": "No audio file provided"}
 
-    # Save the raw messy file, and force-convert it to a clean WAV
     raw_path = '/tmp/raw_upload'
     wav_path = '/tmp/recording.wav'
     out_path = '/tmp/result.csv'
@@ -24,14 +28,17 @@ def analyze_audio():
         if os.path.exists(p): os.remove(p)
         
     upload.save(raw_path)
+    print("✅ Audio file saved to server. Converting format...", flush=True)
 
-    # 1. Force convert ANY browser audio format into a pristine 48kHz WAV file
+    # 🚨 DIAGNOSTIC 2: Did the audio convert safely?
     try:
         subprocess.run(["ffmpeg", "-y", "-i", raw_path, "-ar", "48000", wav_path], check=True, capture_output=True)
+        print("✅ Audio successfully converted to perfect WAV.", flush=True)
     except subprocess.CalledProcessError as e:
+        print("❌ ffmpeg conversion failed!", flush=True)
         return {"error": f"Audio Conversion Failed. Log: {e.stderr.decode()}"}
 
-    # 2. Run the AI! Notice how the input file is at the VERY END, matching their exact syntax.
+    # 🚨 DIAGNOSTIC 3: Launching the AI
     cmd = [
         "python", "-m", "birdnet_analyzer.analyze",
         "-o", out_path,
@@ -39,12 +46,24 @@ def analyze_audio():
         "--lat", "-1",
         "--lon", "-1",
         "--min_conf", "0.05",
+        "--threads", "1", # Force low-memory mode
         wav_path 
     ]
     
-    process = subprocess.run(cmd, capture_output=True, text=True)
+    print(f"🚀 Launching Cornell AI engine...", flush=True)
+    
+    try:
+        # We put a 45-second stopwatch on the AI. If it freezes, we kill it and get an error!
+        process = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
+        print("✅ AI Engine finished processing.", flush=True)
+    except subprocess.TimeoutExpired:
+        print("❌ AI Engine FROZE and timed out!", flush=True)
+        return {"error": "AI Engine timed out. It might be secretly downloading files or ran out of RAM."}
+    except Exception as e:
+        print(f"❌ AI Engine crashed: {e}", flush=True)
+        return {"error": str(e)}
 
-    # 3. Read the results
+    # 🚨 DIAGNOSTIC 4: Reading the final results
     results = []
     if os.path.exists(out_path):
         with open(out_path, 'r') as f:
@@ -57,10 +76,13 @@ def analyze_audio():
                 })
         
         results = sorted(results, key=lambda x: x['score'], reverse=True)
+        print(f"🎉 Success! Found {len(results)} birds.", flush=True)
         return {"results": results}
     else:
+        print("❌ Result file was never created by the AI!", flush=True)
         return {"error": f"AI Engine Crash: {process.stderr} | {process.stdout}"}
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
+    print(f"🟢 Server booting up on port {port}...", flush=True)
     run(host='0.0.0.0', port=port)
