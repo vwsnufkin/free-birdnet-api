@@ -19,7 +19,6 @@ def analyze_audio():
         response.status = 400
         return {"error": "No audio file provided"}
 
-    # FIX 1: Save as .webm so the AI engine correctly decodes the browser's hidden format
     audio_path = '/tmp/recording.webm'
     out_path = '/tmp/result.csv'
     
@@ -28,16 +27,15 @@ def analyze_audio():
         
     upload.save(audio_path)
 
-    # FIX 2: Set lat and lon to -1. This completely disables the geographic filter 
-    # so it will detect any bird in the world (great for testing with YouTube videos).
+    # 3. Use the new modular command structure to trigger the AI
     cmd = [
-        "python", "analyze.py",
+        "python", "-m", "birdnet_analyzer.analyze",
         "--i", audio_path,
         "--o", out_path,
         "--rtype", "csv",
         "--lat", "-1",
         "--lon", "-1",
-        "--min_conf", "0.05"  # Lowered the sensitivity threshold so it catches fainter sounds
+        "--min_conf", "0.05"
     ]
     subprocess.run(cmd)
 
