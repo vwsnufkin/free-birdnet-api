@@ -11,8 +11,11 @@ WORKDIR /app
 # Install lightweight AI dependencies so it easily fits on Render's Free Tier
 RUN pip install --no-cache-dir tflite-runtime librosa bottle resampy scipy
 
+# Copy our custom web server script from GitHub into the AI engine
+COPY server.py /app/server.py
+
 # Open the web port
 EXPOSE 8080
 
 # Start the API server to listen for file uploads from your website
-CMD ["python", "server.py", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["python", "server.py"]
