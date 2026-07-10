@@ -5,41 +5,46 @@ from bottle import route, run, request, response
 
 @route('/analyze', method=['OPTIONS', 'POST'])
 def analyze_audio():
-    # 1. Bypass browser security blocks (CORS)
     response.headers['Access-Control-Allow-Origin'] = '*'
     response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
     
     if request.method == 'OPTIONS':
         return {}
 
-    # 2. Receive the audio from your website
     upload = request.files.get('audio')
-    
     if not upload:
-        response.status = 400
         return {"error": "No audio file provided"}
 
-    audio_path = '/tmp/recording.webm'
+    # We will save the raw messy file, and force-convert it to a clean WAV
+    raw_path = '/tmp/raw_upload'
+    wav_path = '/tmp/recording.wav'
     out_path = '/tmp/result.csv'
     
-    if os.path.exists(audio_path): os.remove(audio_path)
-    if os.path.exists(out_path): os.remove(out_path)
+    for p in [raw_path, wav_path, out_path]:
+        if os.path.exists(p): os.remove(p)
         
-    upload.save(audio_path)
+    upload.save(raw_path)
 
-    # 3. Use the new modular command structure to trigger the AI
+    # 1. Force convert ANY browser audio format into a pristine 48kHz WAV file
+    try:
+        subprocess.run(["ffmpeg", "-y", "-i", raw_path, "-ar", "48000", wav_path], check=True, capture_output=True)
+    except subprocess.CalledProcessError as e:
+        return {"error": f"Audio Conversion Failed. Is the microphone recording? Log: {e.stderr.decode()}"}
+
+    # 2. Run the AI on the perfect WAV file
     cmd = [
         "python", "-m", "birdnet_analyzer.analyze",
-        "--i", audio_path,
+        "--i", wav_path,
         "--o", out_path,
         "--rtype", "csv",
         "--lat", "-1",
         "--lon", "-1",
         "--min_conf", "0.05"
     ]
-    subprocess.run(cmd)
+    
+    process = subprocess.run(cmd, capture_output=True, text=True)
 
-    # 4. Read Cornell's results and send them back to your website
+    # 3. Read the results
     results = []
     if os.path.exists(out_path):
         with open(out_path, 'r') as f:
@@ -51,10 +56,11 @@ def analyze_audio():
                     "score": float(row.get('Confidence', 0))
                 })
         
-        # Sort by the highest confidence match
         results = sorted(results, key=lambda x: x['score'], reverse=True)
-    
-    return {"results": results}
+        return {"results": results}
+    else:
+        # If the file STILL isn't created, spit the exact Python error out to the website!
+        return {"error": f"AI Engine Crash: {process.stderr} | {process.stdout}"}
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
