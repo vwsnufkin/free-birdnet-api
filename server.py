@@ -36,7 +36,6 @@ def analyze_audio():
         print("❌ ffmpeg conversion failed!", flush=True)
         return {"error": f"Audio Conversion Failed. Log: {e.stderr.decode()}"}
 
-    # 🚨 FIX: Changed --threads to --n_workers to match Cornell's exact grammar
     cmd = [
         "python", "-m", "birdnet_analyzer.analyze",
         "-o", out_path,
@@ -48,14 +47,15 @@ def analyze_audio():
         wav_path 
     ]
     
-    print(f"🚀 Launching Cornell AI engine...", flush=True)
+    print(f"🚀 Launching Cornell AI engine... (This can take 2+ minutes on the first run!)", flush=True)
     
     try:
-        process = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
+        # 🚨 FIX: Raised the stopwatch to 180 seconds to survive the first-run download/compilation!
+        process = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
         print("✅ AI Engine finished processing.", flush=True)
     except subprocess.TimeoutExpired:
-        print("❌ AI Engine FROZE and timed out!", flush=True)
-        return {"error": "AI Engine timed out. It might be secretly downloading files or ran out of RAM."}
+        print("❌ AI Engine FROZE and timed out again!", flush=True)
+        return {"error": "AI Engine timed out. It needs more than 3 minutes to boot up on this free server."}
     except Exception as e:
         print(f"❌ AI Engine crashed: {e}", flush=True)
         return {"error": str(e)}
