@@ -15,7 +15,7 @@ def analyze_audio():
     if not upload:
         return {"error": "No audio file provided"}
 
-    # We will save the raw messy file, and force-convert it to a clean WAV
+    # Save the raw messy file, and force-convert it to a clean WAV
     raw_path = '/tmp/raw_upload'
     wav_path = '/tmp/recording.wav'
     out_path = '/tmp/result.csv'
@@ -29,17 +29,17 @@ def analyze_audio():
     try:
         subprocess.run(["ffmpeg", "-y", "-i", raw_path, "-ar", "48000", wav_path], check=True, capture_output=True)
     except subprocess.CalledProcessError as e:
-        return {"error": f"Audio Conversion Failed. Is the microphone recording? Log: {e.stderr.decode()}"}
+        return {"error": f"Audio Conversion Failed. Log: {e.stderr.decode()}"}
 
-    # 2. Run the AI on the perfect WAV file
+    # 2. Run the AI! Notice how the input file is at the VERY END, matching their exact syntax.
     cmd = [
         "python", "-m", "birdnet_analyzer.analyze",
-        "--i", wav_path,
-        "--o", out_path,
+        "-o", out_path,
         "--rtype", "csv",
         "--lat", "-1",
         "--lon", "-1",
-        "--min_conf", "0.05"
+        "--min_conf", "0.05",
+        wav_path 
     ]
     
     process = subprocess.run(cmd, capture_output=True, text=True)
@@ -59,7 +59,6 @@ def analyze_audio():
         results = sorted(results, key=lambda x: x['score'], reverse=True)
         return {"results": results}
     else:
-        # If the file STILL isn't created, spit the exact Python error out to the website!
         return {"error": f"AI Engine Crash: {process.stderr} | {process.stdout}"}
 
 if __name__ == '__main__':
