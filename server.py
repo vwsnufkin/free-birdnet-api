@@ -46,7 +46,7 @@ def analyze_audio():
         "--rtype", "csv",
         "--lat", "-1",
         "--lon", "-1",
-        "--min_conf", "0.05",
+        "--min_conf", "0.01",
         "--n_workers", "1", 
         wav_path 
     ]
