@@ -5,4 +5,4 @@ FROM ghcr.io/tphakala/birdnet-go:latest
 EXPOSE 8080
 
 # Run the analyzer server on startup
-CMD ["birdnet-go", "server", "--port", "8080"]
+CMD ["birdnet-go", "serve", "--port", "8080"]
