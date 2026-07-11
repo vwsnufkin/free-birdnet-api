@@ -8,8 +8,10 @@ from bottle import route, run, request, response
 
 @route('/analyze', method=['OPTIONS', 'POST'])
 def analyze_audio():
+    # Injecting global CORS wildcards manually to allow Lovable domain entries safely
     response.headers['Access-Control-Allow-Origin'] = '*'
     response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Origin, Accept, Content-Type, X-Requested-With, X-CSRF-Token'
     
     if request.method == 'OPTIONS':
         return {}
@@ -20,7 +22,7 @@ def analyze_audio():
     if not upload:
         return {"error": "No audio file provided"}
 
-    # 🚨 NEW: Catch the GPS coordinates sent by your website! (Defaults to -1 if missing)
+    # Catch the GPS coordinates sent by your website! (Defaults to -1 if missing)
     user_lat = request.forms.get('lat', '-1')
     user_lon = request.forms.get('lon', '-1')
     
@@ -44,7 +46,7 @@ def analyze_audio():
     except subprocess.CalledProcessError as e:
         return {"error": f"Audio Conversion Failed. Log: {e.stderr.decode()}"}
 
-    # 🚨 NEW: Pass the real coordinates to the AI so it filters out impossible foreign birds!
+    # Pass the real coordinates to the AI so it filters out impossible foreign birds!
     cmd = [
         "python", "-m", "birdnet_analyzer.analyze",
         "-o", out_dir,
