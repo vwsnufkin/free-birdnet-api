@@ -8,10 +8,10 @@ from bottle import route, run, request, response
 
 @route('/analyze', method=['OPTIONS', 'POST'])
 def analyze_audio():
-    # Injecting global CORS wildcards manually to allow Lovable domain entries safely
+    # 🚨 SYSTEM LEVEL REPAIR: Force explicit wildcard matching for headers
     response.headers['Access-Control-Allow-Origin'] = '*'
-    response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
-    response.headers['Access-Control-Allow-Headers'] = 'Origin, Accept, Content-Type, X-Requested-With, X-CSRF-Token'
+    response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS, GET'
+    response.headers['Access-Control-Allow-Headers'] = 'Origin, Accept, Content-Type, X-Requested-With, X-CSRF-Token, Authorization'
     
     if request.method == 'OPTIONS':
         return {}
