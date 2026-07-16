@@ -1,4 +1,3 @@
-# 1. IMPORTS MUST BE ENTIRELY AT THE TOP!
 import os
 import subprocess
 import csv
@@ -7,10 +6,19 @@ import shutil
 import glob
 from bottle import route, run, request, response
 
-# 2. THEN DECORATORS AND FUNCTIONS CAN BEGIN BELOW THEM
+# 1. NEW: Quick ping route to wake up Render as soon as the user visits the page
+@route('/ping', method=['GET', 'OPTIONS'])
+def ping_server():
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Origin, Accept, Content-Type, X-Requested-With'
+    if request.method == 'OPTIONS':
+        return {}
+    return {"status": "awake", "message": "BirdNET backend is active and ready!"}
+
 @route('/analyze', method=['OPTIONS', 'POST'])
 def analyze_audio():
-    # Keep these at the top for the OPTIONS handshake
+    # Injecting global CORS wildcards manually to allow Lovable domain entries safely
     response.headers['Access-Control-Allow-Origin'] = '*'
     response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS, GET'
     response.headers['Access-Control-Allow-Headers'] = 'Origin, Accept, Content-Type, X-Requested-With, X-CSRF-Token, Authorization'
@@ -23,6 +31,7 @@ def analyze_audio():
 
     upload = request.files.get('audio')
     if not upload:
+        response.headers['Access-Control-Allow-Origin'] = '*'
         return {"error": "No audio file provided"}
 
     # Catch the GPS coordinates sent by your website! (Defaults to -1 if missing)
@@ -47,6 +56,7 @@ def analyze_audio():
         subprocess.run(["ffmpeg", "-y", "-i", raw_path, "-filter:a", "volume=5dB", "-ar", "48000", wav_path], check=True, capture_output=True)
         print("✅ Audio successfully converted and volume boosted.", flush=True)
     except subprocess.CalledProcessError as e:
+        response.headers['Access-Control-Allow-Origin'] = '*'
         return {"error": f"Audio Conversion Failed. Log: {e.stderr.decode()}"}
 
     # Pass the real coordinates to the AI so it filters out impossible foreign birds!
@@ -56,7 +66,7 @@ def analyze_audio():
         "--rtype", "csv",
         "--lat", user_lat,
         "--lon", user_lon,
-        "--min_conf", "0.01", 
+        "--min_conf", "0.01", # Read extremely low confidence entries so we can select the top 3
         "--n_workers", "1", 
         wav_path 
     ]
@@ -67,8 +77,10 @@ def analyze_audio():
         process = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
         print("✅ AI Engine finished processing.", flush=True)
     except subprocess.TimeoutExpired:
+        response.headers['Access-Control-Allow-Origin'] = '*'
         return {"error": "AI Engine timed out. It needs more than 3 minutes to boot up on this free server."}
     except Exception as e:
+        response.headers['Access-Control-Allow-Origin'] = '*'
         return {"error": str(e)}
 
     if "Columns must be same length as key" in process.stderr:
@@ -89,9 +101,13 @@ def analyze_audio():
                         "score": float(row.get('Confidence', 0))
                     })
             
+            # Sort with the highest confidence first
             results = sorted(results, key=lambda x: x['score'], reverse=True)
-            print(f"🎉 Success! Found {len(results)} birds.", flush=True)
             
+            # 🚨 MODIFIED: Always slice to return exactly the top 3 birds, regardless of confidence %
+            results = results[:3]
+            
+            print(f"🎉 Success! Returning top {len(results)} birds.", flush=True)
             response.headers['Access-Control-Allow-Origin'] = '*' 
             return {"results": results}
         
