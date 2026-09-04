@@ -4,6 +4,7 @@ import csv
 import sys
 import shutil
 import glob
+import uuid
 from bottle import route, run, request, response
 
 # 1. Quick ping route to wake up Render as soon as the user visits the page
@@ -18,7 +19,7 @@ def ping_server():
 
 @route('/analyze', method=['OPTIONS', 'POST'])
 def analyze_audio():
-    # Injecting global CORS wildcards manually to allow Lovable domain entries safely
+    # Global CORS wildcards for cross-origin access from Lovable frontend
     response.headers['Access-Control-Allow-Origin'] = '*'
     response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS, GET'
     response.headers['Access-Control-Allow-Headers'] = 'Origin, Accept, Content-Type, X-Requested-With, X-CSRF-Token, Authorization'
@@ -34,87 +35,97 @@ def analyze_audio():
         response.headers['Access-Control-Allow-Origin'] = '*'
         return {"error": "No audio file provided"}
 
-    # Catch the GPS coordinates sent by your website! (Defaults to -1 if missing)
+    # Catch GPS coordinates sent by mobile app (Defaults to -1 if missing)
     user_lat = request.forms.get('lat', '-1')
     user_lon = request.forms.get('lon', '-1')
     
     print(f"🌍 Location data received: Lat {user_lat}, Lon {user_lon}", flush=True)
 
-    raw_path = '/tmp/raw_upload'
-    wav_path = '/tmp/recording.wav'
-    out_dir = '/tmp/bird_results'
-    
-    if os.path.exists(raw_path): os.remove(raw_path)
-    if os.path.exists(wav_path): os.remove(wav_path)
-    if os.path.exists(out_dir): shutil.rmtree(out_dir) 
-        
-    upload.save(raw_path)
-    print("✅ Audio file saved to server. Converting format...", flush=True)
+    # 🔒 MULTI-USER ISOLATION: Generate a unique ID for this specific request
+    # This prevents User A's upload from overwriting User B's recording
+    req_id = str(uuid.uuid4())
+    raw_path = f'/tmp/raw_{req_id}'
+    wav_path = f'/tmp/rec_{req_id}.wav'
+    out_dir = f'/tmp/birds_{req_id}'
 
     try:
+        upload.save(raw_path)
+        print(f"✅ [{req_id[:8]}] Audio file saved. Converting format...", flush=True)
+
         # Boost volume by 5dB to clear muffle issues
-        subprocess.run(["ffmpeg", "-y", "-i", raw_path, "-filter:a", "volume=5dB", "-ar", "48000", wav_path], check=True, capture_output=True)
-        print("✅ Audio successfully converted and volume boosted.", flush=True)
-    except subprocess.CalledProcessError as e:
-        response.headers['Access-Control-Allow-Origin'] = '*'
-        return {"error": f"Audio Conversion Failed. Log: {e.stderr.decode()}"}
+        try:
+            subprocess.run(["ffmpeg", "-y", "-i", raw_path, "-filter:a", "volume=5dB", "-ar", "48000", wav_path], check=True, capture_output=True)
+            print(f"✅ [{req_id[:8]}] Audio successfully converted and volume boosted.", flush=True)
+        except subprocess.CalledProcessError as e:
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return {"error": f"Audio Conversion Failed. Log: {e.stderr.decode()}"}
 
-    # Pass coordinates to AI to filter impossible foreign species
-    cmd = [
-        "python", "-m", "birdnet_analyzer.analyze",
-        "-o", out_dir,
-        "--rtype", "csv",
-        "--lat", user_lat,
-        "--lon", user_lon,
-        "--min_conf", "0.01", # Extract all low-confidence matches for frontend slider filtering
-        "--n_workers", "1", 
-        wav_path 
-    ]
-    
-    print("🚀 Launching Cornell AI engine...", flush=True)
-    
-    try:
-        process = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
-        print("✅ AI Engine finished processing.", flush=True)
-    except subprocess.TimeoutExpired:
-        response.headers['Access-Control-Allow-Origin'] = '*'
-        return {"error": "AI Engine timed out. It needs more than 3 minutes to boot up on this free server."}
-    except Exception as e:
-        response.headers['Access-Control-Allow-Origin'] = '*'
-        return {"error": str(e)}
-
-    if "Columns must be same length as key" in process.stderr:
-        print("✅ Cornell empty-result bug caught. Returning 0 birds.", flush=True)
-        response.headers['Access-Control-Allow-Origin'] = '*' 
-        return {"results": []}
-
-    results = []
-    if os.path.exists(out_dir):
-        csv_files = glob.glob(f"{out_dir}/*.csv")
-        if csv_files:
-            with open(csv_files[0], 'r') as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    results.append({
-                        "speciesCode": row.get('Scientific name', ''),
-                        "commonName": row.get('Common name', ''),
-                        "score": float(row.get('Confidence', 0))
-                    })
-            
-            # Sort with the highest confidence first
-            results = sorted(results, key=lambda x: x['score'], reverse=True)
-            
-            # REMOVED: Truncation slice (`results[:3]`) removed to return the complete array
-            
-            print(f"🎉 Success! Returning all {len(results)} detected bird matches.", flush=True)
-            response.headers['Access-Control-Allow-Origin'] = '*' 
-            return {"results": results}
+        # Pass coordinates to AI to filter impossible foreign species
+        cmd = [
+            "python", "-m", "birdnet_analyzer.analyze",
+            "-o", out_dir,
+            "--rtype", "csv",
+            "--lat", user_lat,
+            "--lon", user_lon,
+            "--min_conf", "0.01", # Extract all low-confidence matches for frontend slider filtering
+            "--n_workers", "1", 
+            wav_path 
+        ]
         
-    print("❌ Result file was never created by the AI!", flush=True)
-    response.headers['Access-Control-Allow-Origin'] = '*' 
-    return {"error": f"AI Engine Crash: {process.stderr} | {process.stdout}"}
+        print(f"🚀 [{req_id[:8]}] Launching Cornell AI engine...", flush=True)
+        
+        try:
+            process = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+            print(f"✅ [{req_id[:8]}] AI Engine finished processing.", flush=True)
+        except subprocess.TimeoutExpired:
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return {"error": "AI Engine timed out. It needs more time to boot up."}
+        except Exception as e:
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return {"error": str(e)}
+
+        if "Columns must be same length as key" in process.stderr:
+            print(f"✅ [{req_id[:8]}] Cornell empty-result bug caught. Returning 0 birds.", flush=True)
+            response.headers['Access-Control-Allow-Origin'] = '*' 
+            return {"results": []}
+
+        results = []
+        if os.path.exists(out_dir):
+            csv_files = glob.glob(f"{out_dir}/*.csv")
+            if csv_files:
+                with open(csv_files[0], 'r') as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        results.append({
+                            "speciesCode": row.get('Scientific name', ''),
+                            "commonName": row.get('Common name', ''),
+                            "score": float(row.get('Confidence', 0))
+                        })
+                
+                # Sort with highest confidence first
+                results = sorted(results, key=lambda x: x['score'], reverse=True)
+                
+                print(f"🎉 [{req_id[:8]}] Success! Returning all {len(results)} detected bird matches.", flush=True)
+                response.headers['Access-Control-Allow-Origin'] = '*' 
+                return {"results": results}
+            
+        print(f"❌ [{req_id[:8]}] Result file was never created by the AI!", flush=True)
+        response.headers['Access-Control-Allow-Origin'] = '*' 
+        return {"error": f"AI Engine Crash: {process.stderr} | {process.stdout}"}
+
+    finally:
+        # 🧹 GARBAGE COLLECTION: Clean up temp files for this specific request ID
+        if os.path.exists(raw_path): os.remove(raw_path)
+        if os.path.exists(wav_path): os.remove(wav_path)
+        if os.path.exists(out_dir): shutil.rmtree(out_dir)
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
-    print(f"🟢 Server booting up on port {port}...", flush=True)
-    run(host='0.0.0.0', port=port)
+    print(f"🟢 Multi-user multi-threaded server booting up on port {port}...", flush=True)
+    
+    # Using 'paste' or multi-threaded fallback to handle concurrent requests
+    try:
+        run(host='0.0.0.0', port=port, server='paste')
+    except ImportError:
+        # Fallback to standard wsgiref server if paste is unavailable
+        run(host='0.0.0.0', port=port)
