@@ -6,7 +6,7 @@ import shutil
 import glob
 from bottle import route, run, request, response
 
-# 1. NEW: Quick ping route to wake up Render as soon as the user visits the page
+# 1. Quick ping route to wake up Render as soon as the user visits the page
 @route('/ping', method=['GET', 'OPTIONS'])
 def ping_server():
     response.headers['Access-Control-Allow-Origin'] = '*'
@@ -52,26 +52,26 @@ def analyze_audio():
     print("✅ Audio file saved to server. Converting format...", flush=True)
 
     try:
-        # We added a tiny volume boost (-filter:a volume=5dB) to help overcome speaker muffling
+        # Boost volume by 5dB to clear muffle issues
         subprocess.run(["ffmpeg", "-y", "-i", raw_path, "-filter:a", "volume=5dB", "-ar", "48000", wav_path], check=True, capture_output=True)
         print("✅ Audio successfully converted and volume boosted.", flush=True)
     except subprocess.CalledProcessError as e:
         response.headers['Access-Control-Allow-Origin'] = '*'
         return {"error": f"Audio Conversion Failed. Log: {e.stderr.decode()}"}
 
-    # Pass the real coordinates to the AI so it filters out impossible foreign birds!
+    # Pass coordinates to AI to filter impossible foreign species
     cmd = [
         "python", "-m", "birdnet_analyzer.analyze",
         "-o", out_dir,
         "--rtype", "csv",
         "--lat", user_lat,
         "--lon", user_lon,
-        "--min_conf", "0.01", # Read extremely low confidence entries so we can select the top 3
+        "--min_conf", "0.01", # Extract all low-confidence matches for frontend slider filtering
         "--n_workers", "1", 
         wav_path 
     ]
     
-    print(f"🚀 Launching Cornell AI engine...", flush=True)
+    print("🚀 Launching Cornell AI engine...", flush=True)
     
     try:
         process = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
@@ -104,10 +104,9 @@ def analyze_audio():
             # Sort with the highest confidence first
             results = sorted(results, key=lambda x: x['score'], reverse=True)
             
-            # 🚨 MODIFIED: Always slice to return exactly the top 3 birds, regardless of confidence %
-            results = results[:3]
+            # REMOVED: Truncation slice (`results[:3]`) removed to return the complete array
             
-            print(f"🎉 Success! Returning top {len(results)} birds.", flush=True)
+            print(f"🎉 Success! Returning all {len(results)} detected bird matches.", flush=True)
             response.headers['Access-Control-Allow-Origin'] = '*' 
             return {"results": results}
         
