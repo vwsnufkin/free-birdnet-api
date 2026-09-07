@@ -1,11 +1,17 @@
 import os
+# 🚨 CRITICAL: Set TensorFlow thread limits BEFORE importing any ML libraries!
+os.environ['OMP_NUM_THREADS'] = '1'
+os.environ['TF_NUM_INTRAOP_THREADS'] = '1'
+os.environ['TF_NUM_INTEROP_THREADS'] = '1'
+
 import subprocess
 import csv
 import sys
 import shutil
 import glob
 import uuid
-from bottle import route, run, request, response, app
+import gc
+from bottle import route, run, request, response
 
 # 1. Quick ping route to wake up Render as soon as the user visits the page
 @route('/ping', method=['GET', 'OPTIONS'])
@@ -41,7 +47,7 @@ def analyze_audio():
     
     print(f"🌍 Location data received: Lat {user_lat}, Lon {user_lon}", flush=True)
 
-    # MULTI-USER ISOLATION: Generate a unique ID for this specific request
+    # Isolated paths using UUID
     req_id = str(uuid.uuid4())
     raw_path = f'/tmp/raw_{req_id}'
     wav_path = f'/tmp/rec_{req_id}.wav'
@@ -66,7 +72,7 @@ def analyze_audio():
             "--rtype", "csv",
             "--lat", user_lat,
             "--lon", user_lon,
-            "--min_conf", "0.01", # Extract all low-confidence matches for frontend slider filtering
+            "--min_conf", "0.01",
             "--n_workers", "1", 
             wav_path 
         ]
@@ -113,26 +119,17 @@ def analyze_audio():
         return {"error": f"AI Engine Crash: {process.stderr} | {process.stdout}"}
 
     finally:
-        # GARBAGE COLLECTION: Clean up temp files for this specific request ID
+        # 🧹 CLEANUP & GARBAGE COLLECTION
         if os.path.exists(raw_path): os.remove(raw_path)
         if os.path.exists(wav_path): os.remove(wav_path)
         if os.path.exists(out_dir): shutil.rmtree(out_dir)
+        
+        # Force Python memory release back to system
+        gc.collect()
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
-    print(f"🟢 Server booting up on port {port}...", flush=True)
+    print(f"🟢 OOM-Optimized single-thread server booting up on port {port}...", flush=True)
     
-    try:
-        import paste
-        print("⚡ Running with Paste multi-threaded WSGI server...", flush=True)
-        run(host='0.0.0.0', port=port, server='paste')
-    except ImportError:
-        print("⚠️ Paste package not found, running with standard thread-safe WSGIRef server...", flush=True)
-        from wsgiref.simple_server import make_server, WSGIServer
-        from socketserver import ThreadingMixIn
-
-        class ThreadedWSGIServer(ThreadingMixIn, WSGIServer):
-            pass
-
-        server = make_server('0.0.0.0', port, app(), server_class=ThreadedWSGIServer)
-        server.serve_forever()
+    # Use standard wsgiref server to guarantee sequential, single-threaded execution under 512MB
+    run(host='0.0.0.0', port=port)
