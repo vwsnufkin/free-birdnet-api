@@ -1,6 +1,8 @@
 import os
+# Force strict single-thread TensorFlow settings BEFORE loading libraries
 os.environ['OMP_NUM_THREADS'] = '1'
 os.environ['TF_NUM_INTRAOP_THREADS'] = '1'
+os.environ['TF_NUM_INTEROP_THREADS'] = '1'
 
 import subprocess
 import csv
@@ -10,6 +12,9 @@ import glob
 import uuid
 import gc
 from bottle import route, run, request, response
+
+# Import BirdNET analyzer entrypoint directly to execute in the same process
+import birdnet_analyzer.analyze as birdnet_cli
 
 @route('/ping', method=['GET', 'OPTIONS'])
 def ping_server():
@@ -56,30 +61,34 @@ def analyze_audio():
             response.headers['Access-Control-Allow-Origin'] = '*'
             return {"error": f"Audio Conversion Failed: {e.stderr.decode()}"}
 
-        # Passing --min_conf 0.15 filters out all low-probability noise directly in AI analysis
-        cmd = [
-            "python", "-m", "birdnet_analyzer.analyze",
+        print(f"🚀 [{req_id[:8]}] Launching Cornell AI engine in-memory (Min Conf: 15%)...", flush=True)
+        
+        # Save old sys.argv to restore later
+        old_argv = sys.argv
+        
+        # Construct synthetic CLI flags directly inside the existing Python process
+        sys.argv = [
+            "birdnet_analyzer.analyze",
+            "-i", wav_path,
             "-o", out_dir,
             "--rtype", "csv",
-            "--lat", user_lat,
-            "--lon", user_lon,
-            "--min_conf", "0.15",  # 👈 Minimum 15% confidence filter
-            "--n_workers", "1", 
-            wav_path 
+            "--lat", str(user_lat),
+            "--lon", str(user_lon),
+            "--min_conf", "0.15",
+            "--n_workers", "1"
         ]
-        
-        print(f"🚀 [{req_id[:8]}] Launching Cornell AI engine (Min Conf: 15%)...", flush=True)
-        
-        try:
-            process = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
-            print(f"✅ [{req_id[:8]}] AI Engine finished processing.", flush=True)
-        except subprocess.TimeoutExpired:
-            response.headers['Access-Control-Allow-Origin'] = '*'
-            return {"error": "AI Engine timed out."}
 
-        if "Columns must be same length as key" in process.stderr:
-            response.headers['Access-Control-Allow-Origin'] = '*' 
-            return {"results": []}
+        try:
+            # Call BirdNET's entrypoint directly in-process (Zero extra memory overhead!)
+            birdnet_cli.main()
+            print(f"✅ [{req_id[:8]}] AI Engine finished processing cleanly.", flush=True)
+        except SystemExit:
+            # Catch standard sys.exit() calls from CLI parsers
+            pass
+        except Exception as e:
+            print(f"❌ In-process execution error: {e}", flush=True)
+        finally:
+            sys.argv = old_argv
 
         results = []
         if os.path.exists(out_dir):
@@ -94,15 +103,16 @@ def analyze_audio():
                             "score": float(row.get('Confidence', 0))
                         })
                 
-                # Sort by confidence and slice to return a MAXIMUM of 5 birds
+                # Sort by confidence and return top 5
                 results = sorted(results, key=lambda x: x['score'], reverse=True)[:5]
                 
-                print(f"🎉 [{req_id[:8]}] Success! Returning top {len(results)} matches (>= 15% confidence).", flush=True)
+                print(f"🎉 [{req_id[:8]}] Success! Returning top {len(results)} matches.", flush=True)
                 response.headers['Access-Control-Allow-Origin'] = '*' 
                 return {"results": results}
             
+        print(f"⚠️ [{req_id[:8]}] No CSV results generated.", flush=True)
         response.headers['Access-Control-Allow-Origin'] = '*' 
-        return {"error": "No results generated"}
+        return {"results": []}
 
     finally:
         if os.path.exists(raw_path): os.remove(raw_path)
@@ -112,5 +122,5 @@ def analyze_audio():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
-    print(f"🟢 Optimized 15% threshold / max 5 server booting on port {port}...", flush=True)
+    print(f"🟢 In-process single-thread server booting on port {port}...", flush=True)
     run(host='0.0.0.0', port=port)
