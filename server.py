@@ -5,7 +5,7 @@ import sys
 import shutil
 import glob
 import uuid
-from bottle import route, run, request, response
+from bottle import route, run, request, response, app
 
 # 1. Quick ping route to wake up Render as soon as the user visits the page
 @route('/ping', method=['GET', 'OPTIONS'])
@@ -41,8 +41,7 @@ def analyze_audio():
     
     print(f"🌍 Location data received: Lat {user_lat}, Lon {user_lon}", flush=True)
 
-    # 🔒 MULTI-USER ISOLATION: Generate a unique ID for this specific request
-    # This prevents User A's upload from overwriting User B's recording
+    # MULTI-USER ISOLATION: Generate a unique ID for this specific request
     req_id = str(uuid.uuid4())
     raw_path = f'/tmp/raw_{req_id}'
     wav_path = f'/tmp/rec_{req_id}.wav'
@@ -79,7 +78,7 @@ def analyze_audio():
             print(f"✅ [{req_id[:8]}] AI Engine finished processing.", flush=True)
         except subprocess.TimeoutExpired:
             response.headers['Access-Control-Allow-Origin'] = '*'
-            return {"error": "AI Engine timed out. It needs more time to boot up."}
+            return {"error": "AI Engine timed out."}
         except Exception as e:
             response.headers['Access-Control-Allow-Origin'] = '*'
             return {"error": str(e)}
@@ -114,18 +113,26 @@ def analyze_audio():
         return {"error": f"AI Engine Crash: {process.stderr} | {process.stdout}"}
 
     finally:
-        # 🧹 GARBAGE COLLECTION: Clean up temp files for this specific request ID
+        # GARBAGE COLLECTION: Clean up temp files for this specific request ID
         if os.path.exists(raw_path): os.remove(raw_path)
         if os.path.exists(wav_path): os.remove(wav_path)
         if os.path.exists(out_dir): shutil.rmtree(out_dir)
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 8080))
-    print(f"🟢 Multi-user multi-threaded server booting up on port {port}...", flush=True)
+    port = int(os.environ.get('PORT', 10000))
+    print(f"🟢 Server booting up on port {port}...", flush=True)
     
-    # Using 'paste' or multi-threaded fallback to handle concurrent requests
     try:
+        import paste
+        print("⚡ Running with Paste multi-threaded WSGI server...", flush=True)
         run(host='0.0.0.0', port=port, server='paste')
     except ImportError:
-        # Fallback to standard wsgiref server if paste is unavailable
-        run(host='0.0.0.0', port=port)
+        print("⚠️ Paste package not found, running with standard thread-safe WSGIRef server...", flush=True)
+        from wsgiref.simple_server import make_server, WSGIServer
+        from socketserver import ThreadingMixIn
+
+        class ThreadedWSGIServer(ThreadingMixIn, WSGIServer):
+            pass
+
+        server = make_server('0.0.0.0', port, app(), server_class=ThreadedWSGIServer)
+        server.serve_forever()
