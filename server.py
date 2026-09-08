@@ -1,5 +1,4 @@
 import os
-# Force strict single-thread TensorFlow settings BEFORE loading libraries
 os.environ['OMP_NUM_THREADS'] = '1'
 os.environ['TF_NUM_INTRAOP_THREADS'] = '1'
 os.environ['TF_NUM_INTEROP_THREADS'] = '1'
@@ -13,11 +12,8 @@ import uuid
 import gc
 from bottle import route, run, request, response
 
-# Import BirdNET analyzer CLI runner
-try:
-    import birdnet_analyzer.analyze as birdnet_cli
-except ImportError:
-    birdnet_cli = None
+# Import BirdNET analyzer direct function
+import birdnet_analyzer.analyze as birdnet_analyze
 
 @route('/ping', method=['GET', 'OPTIONS'])
 def ping_server():
@@ -66,40 +62,36 @@ def analyze_audio():
 
         print(f"🚀 [{req_id[:8]}] Launching Cornell AI engine in-memory (Min Conf: 15%)...", flush=True)
         
-        # Save old sys.argv to restore later
-        old_argv = sys.argv
-        
-        # Construct synthetic CLI flags directly inside the existing Python process
-        sys.argv = [
-            "birdnet_analyzer",
-            "-i", wav_path,
-            "-o", out_dir,
-            "--rtype", "csv",
-            "--lat", str(user_lat),
-            "--lon", str(user_lon),
-            "--min_conf", "0.15",
-            "--n_workers", "1"
-        ]
-
         try:
-            # 💡 FIX: Check if birdnet_cli is a function or module and execute accordingly
-            if callable(birdnet_cli):
-                birdnet_cli()
-            elif hasattr(birdnet_cli, 'main'):
-                birdnet_cli.main()
-            else:
-                # Direct module execution fallback
-                from birdnet_analyzer import client
-                client.main()
-                
+            os.makedirs(out_dir, exist_ok=True)
+            
+            # Parse coordinates
+            lat_val = float(user_lat) if user_lat != '-1' else -1.0
+            lon_val = float(user_lon) if user_lon != '-1' else -1.0
+
+            # 💡 DIRECT FUNCTION CALL: Passes wav_path as 'audio_input'
+            birdnet_analyze.analyze(
+                wav_path,
+                output_path=out_dir,
+                lat=lat_val,
+                lon=lon_val,
+                min_conf=0.15,
+                rtype="csv"
+            )
             print(f"✅ [{req_id[:8]}] AI Engine finished processing cleanly.", flush=True)
-        except SystemExit:
-            # Catch standard sys.exit() calls from CLI parsers
-            pass
+        except TypeError:
+            # Fallback for minor positional signature variations across BirdNET releases
+            birdnet_analyze.analyze(
+                audio_input=wav_path,
+                output_path=out_dir,
+                lat=lat_val,
+                lon=lon_val,
+                min_conf=0.15,
+                rtype="csv"
+            )
+            print(f"✅ [{req_id[:8]}] AI Engine finished processing cleanly (Fallback).", flush=True)
         except Exception as e:
             print(f"❌ In-process execution error: {e}", flush=True)
-        finally:
-            sys.argv = old_argv
 
         results = []
         if os.path.exists(out_dir):
@@ -133,5 +125,5 @@ def analyze_audio():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
-    print(f"🟢 In-process single-thread server booting on port {port}...", flush=True)
+    print(f"🟢 Direct-function low-RAM server booting on port {port}...", flush=True)
     run(host='0.0.0.0', port=port)
