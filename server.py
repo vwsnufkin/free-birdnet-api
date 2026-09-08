@@ -1,4 +1,5 @@
 import os
+# Force strict single-thread execution
 os.environ['OMP_NUM_THREADS'] = '1'
 os.environ['TF_NUM_INTRAOP_THREADS'] = '1'
 os.environ['TF_NUM_INTEROP_THREADS'] = '1'
@@ -10,9 +11,9 @@ import shutil
 import glob
 import uuid
 import gc
+import runpy
 from bottle import route, run, request, response
 
-# Global lock to signal server status to Lovable
 IS_BUSY = False
 
 @route('/ping', method=['GET', 'OPTIONS'])
@@ -24,7 +25,6 @@ def ping_server():
         return {}
     return {"status": "awake", "busy": IS_BUSY}
 
-# New endpoint: Lovable checks this before allowing audio upload
 @route('/status', method=['GET', 'OPTIONS'])
 def check_status():
     response.headers['Access-Control-Allow-Origin'] = '*'
@@ -45,7 +45,6 @@ def analyze_audio_request():
         response.status = 200
         return {}
 
-    # Reject request immediately if another user is currently analyzing audio
     if IS_BUSY:
         response.status = 429
         return {"error": "Server is currently busy analyzing audio. Please try again in a few seconds."}
@@ -66,9 +65,7 @@ def analyze_audio_request():
     out_dir = f'/tmp/birds_{req_id}'
 
     try:
-        # LOCK SERVER
         IS_BUSY = True
-        
         upload.save(raw_path)
         print(f"✅ [{req_id[:8]}] Audio file saved. Converting format...", flush=True)
 
@@ -79,8 +76,14 @@ def analyze_audio_request():
             response.headers['Access-Control-Allow-Origin'] = '*'
             return {"error": f"Audio Conversion Failed: {e.stderr.decode()}"}
 
-        cmd = [
-            sys.executable, "-m", "birdnet_analyzer.analyze",
+        print(f"🚀 [{req_id[:8]}] Launching Cornell AI engine in-process...", flush=True)
+        
+        # Save old sys.argv to restore later
+        old_argv = sys.argv
+        
+        # Pass CLI parameters directly inside the current process
+        sys.argv = [
+            "birdnet_analyzer.analyze",
             "-o", out_dir,
             "--rtype", "csv",
             "--lat", str(user_lat),
@@ -89,18 +92,18 @@ def analyze_audio_request():
             "--n_workers", "1",
             wav_path
         ]
-        
-        print(f"🚀 [{req_id[:8]}] Launching Cornell AI engine...", flush=True)
-        
+
         try:
-            process = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-            if process.returncode != 0:
-                print(f"⚠️ CLI Error Output: {process.stderr}", flush=True)
-            else:
-                print(f"✅ [{req_id[:8]}] AI Engine finished processing cleanly.", flush=True)
-        except subprocess.TimeoutExpired:
-            response.headers['Access-Control-Allow-Origin'] = '*'
-            return {"error": "AI Engine timed out."}
+            # Execute BirdNET CLI in the current Python memory space (0 extra RAM overhead!)
+            runpy.run_module('birdnet_analyzer.analyze', run_name='__main__')
+            print(f"✅ [{req_id[:8]}] AI Engine finished processing cleanly.", flush=True)
+        except SystemExit:
+            # Catch standard sys.exit() calls from CLI parsers
+            pass
+        except Exception as e:
+            print(f"❌ Execution error: {e}", flush=True)
+        finally:
+            sys.argv = old_argv
 
         results = []
         if os.path.exists(out_dir):
@@ -125,7 +128,6 @@ def analyze_audio_request():
         return {"results": []}
 
     finally:
-        # UNLOCK SERVER & Clean up
         if os.path.exists(raw_path): os.remove(raw_path)
         if os.path.exists(wav_path): os.remove(wav_path)
         if os.path.exists(out_dir): shutil.rmtree(out_dir)
@@ -134,5 +136,5 @@ def analyze_audio_request():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
-    print(f"🟢 Failsafe lock-enabled server booting on port {port}...", flush=True)
+    print(f"🟢 Zero-overhead in-process server booting on port {port}...", flush=True)
     run(host='0.0.0.0', port=port)
