@@ -13,8 +13,11 @@ import uuid
 import gc
 from bottle import route, run, request, response
 
-# Import BirdNET analyzer entrypoint directly to execute in the same process
-import birdnet_analyzer.analyze as birdnet_cli
+# Import BirdNET analyzer CLI runner
+try:
+    import birdnet_analyzer.analyze as birdnet_cli
+except ImportError:
+    birdnet_cli = None
 
 @route('/ping', method=['GET', 'OPTIONS'])
 def ping_server():
@@ -68,7 +71,7 @@ def analyze_audio():
         
         # Construct synthetic CLI flags directly inside the existing Python process
         sys.argv = [
-            "birdnet_analyzer.analyze",
+            "birdnet_analyzer",
             "-i", wav_path,
             "-o", out_dir,
             "--rtype", "csv",
@@ -79,8 +82,16 @@ def analyze_audio():
         ]
 
         try:
-            # Call BirdNET's entrypoint directly in-process (Zero extra memory overhead!)
-            birdnet_cli.main()
+            # 💡 FIX: Check if birdnet_cli is a function or module and execute accordingly
+            if callable(birdnet_cli):
+                birdnet_cli()
+            elif hasattr(birdnet_cli, 'main'):
+                birdnet_cli.main()
+            else:
+                # Direct module execution fallback
+                from birdnet_analyzer import client
+                client.main()
+                
             print(f"✅ [{req_id[:8]}] AI Engine finished processing cleanly.", flush=True)
         except SystemExit:
             # Catch standard sys.exit() calls from CLI parsers
