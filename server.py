@@ -1,5 +1,5 @@
 import os
-# Force strict single-thread TensorFlow settings BEFORE loading libraries
+# Force strict single-thread execution before importing ML libraries
 os.environ['OMP_NUM_THREADS'] = '1'
 os.environ['TF_NUM_INTRAOP_THREADS'] = '1'
 os.environ['TF_NUM_INTEROP_THREADS'] = '1'
@@ -13,9 +13,6 @@ import uuid
 import gc
 from bottle import route, run, request, response
 
-# Import BirdNET analyze function directly
-from birdnet_analyzer import analyze as birdnet_analyze
-
 @route('/ping', method=['GET', 'OPTIONS'])
 def ping_server():
     response.headers['Access-Control-Allow-Origin'] = '*'
@@ -27,7 +24,6 @@ def ping_server():
 
 @route('/analyze', method=['OPTIONS', 'POST'])
 def analyze_audio_request():
-    # Set explicit CORS headers
     response.headers['Access-Control-Allow-Origin'] = '*'
     response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS, GET'
     response.headers['Access-Control-Allow-Headers'] = 'Origin, Accept, Content-Type, X-Requested-With, X-CSRF-Token, Authorization'
@@ -56,34 +52,36 @@ def analyze_audio_request():
         print(f"✅ [{req_id[:8]}] Audio file saved. Converting format...", flush=True)
 
         try:
-            # Resample audio to 48kHz WAV with 5dB volume boost
             subprocess.run(["ffmpeg", "-y", "-i", raw_path, "-filter:a", "volume=5dB", "-ar", "48000", wav_path], check=True, capture_output=True)
             print(f"✅ [{req_id[:8]}] Audio successfully converted.", flush=True)
         except subprocess.CalledProcessError as e:
             response.headers['Access-Control-Allow-Origin'] = '*'
             return {"error": f"Audio Conversion Failed: {e.stderr.decode()}"}
 
-        print(f"🚀 [{req_id[:8]}] Launching Cornell AI engine in-memory (Min Conf: 15%)...", flush=True)
+        # Proven CLI flags that worked in your original stable build
+        cmd = [
+            sys.executable, "-m", "birdnet_analyzer.analyze",
+            "-i", wav_path,
+            "-o", out_dir,
+            "--rtype", "csv",
+            "--lat", str(user_lat),
+            "--lon", str(user_lon),
+            "--min_conf", "0.15",
+            "--threads", "1"
+        ]
+        
+        print(f"🚀 [{req_id[:8]}] Launching Cornell AI engine...", flush=True)
         
         try:
-            os.makedirs(out_dir, exist_ok=True)
-            
-            lat_val = float(user_lat) if user_lat != '-1' else -1.0
-            lon_val = float(user_lon) if user_lon != '-1' else -1.0
-
-            # Direct function call - birdnet_analyze is the function itself
-            birdnet_analyze(
-                wav_path,
-                output_path=out_dir,
-                lat=lat_val,
-                lon=lon_val,
-                min_conf=0.15,
-                rtype="csv"
-            )
-            print(f"✅ [{req_id[:8]}] AI Engine finished processing cleanly.", flush=True)
-
-        except Exception as e:
-            print(f"❌ In-process execution error: {e}", flush=True)
+            # Execute with environmental thread limits enforced
+            process = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if process.returncode != 0:
+                print(f"⚠️ CLI Warning/Error Output: {process.stderr}", flush=True)
+            else:
+                print(f"✅ [{req_id[:8]}] AI Engine finished processing.", flush=True)
+        except subprocess.TimeoutExpired:
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return {"error": "AI Engine timed out."}
 
         results = []
         if os.path.exists(out_dir):
@@ -98,7 +96,7 @@ def analyze_audio_request():
                             "score": float(row.get('Confidence', 0))
                         })
                 
-                # Sort by highest confidence and return top 5
+                # Sort by confidence score and return top 5
                 results = sorted(results, key=lambda x: x['score'], reverse=True)[:5]
                 
                 print(f"🎉 [{req_id[:8]}] Success! Returning top {len(results)} matches.", flush=True)
@@ -110,7 +108,6 @@ def analyze_audio_request():
         return {"results": []}
 
     finally:
-        # Garbage cleanup
         if os.path.exists(raw_path): os.remove(raw_path)
         if os.path.exists(wav_path): os.remove(wav_path)
         if os.path.exists(out_dir): shutil.rmtree(out_dir)
@@ -118,5 +115,5 @@ def analyze_audio_request():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
-    print(f"🟢 Direct-function low-RAM server booting on port {port}...", flush=True)
+    print(f"🟢 Stable CLI-mode server booting on port {port}...", flush=True)
     run(host='0.0.0.0', port=port)
