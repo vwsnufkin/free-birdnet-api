@@ -1,4 +1,5 @@
 import os
+# Force strict single-thread TensorFlow settings BEFORE loading libraries
 os.environ['OMP_NUM_THREADS'] = '1'
 os.environ['TF_NUM_INTRAOP_THREADS'] = '1'
 os.environ['TF_NUM_INTEROP_THREADS'] = '1'
@@ -12,8 +13,8 @@ import uuid
 import gc
 from bottle import route, run, request, response
 
-# Import BirdNET analyzer direct function
-import birdnet_analyzer.analyze as birdnet_analyze
+# Import BirdNET analyze function directly
+from birdnet_analyzer import analyze as birdnet_analyze
 
 @route('/ping', method=['GET', 'OPTIONS'])
 def ping_server():
@@ -25,7 +26,8 @@ def ping_server():
     return {"status": "awake", "message": "BirdNET backend is active and ready!"}
 
 @route('/analyze', method=['OPTIONS', 'POST'])
-def analyze_audio():
+def analyze_audio_request():
+    # Set explicit CORS headers
     response.headers['Access-Control-Allow-Origin'] = '*'
     response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS, GET'
     response.headers['Access-Control-Allow-Headers'] = 'Origin, Accept, Content-Type, X-Requested-With, X-CSRF-Token, Authorization'
@@ -54,6 +56,7 @@ def analyze_audio():
         print(f"✅ [{req_id[:8]}] Audio file saved. Converting format...", flush=True)
 
         try:
+            # Resample audio to 48kHz WAV with 5dB volume boost
             subprocess.run(["ffmpeg", "-y", "-i", raw_path, "-filter:a", "volume=5dB", "-ar", "48000", wav_path], check=True, capture_output=True)
             print(f"✅ [{req_id[:8]}] Audio successfully converted.", flush=True)
         except subprocess.CalledProcessError as e:
@@ -65,12 +68,11 @@ def analyze_audio():
         try:
             os.makedirs(out_dir, exist_ok=True)
             
-            # Parse coordinates
             lat_val = float(user_lat) if user_lat != '-1' else -1.0
             lon_val = float(user_lon) if user_lon != '-1' else -1.0
 
-            # 💡 DIRECT FUNCTION CALL: Passes wav_path as 'audio_input'
-            birdnet_analyze.analyze(
+            # Direct function call - birdnet_analyze is the function itself
+            birdnet_analyze(
                 wav_path,
                 output_path=out_dir,
                 lat=lat_val,
@@ -79,17 +81,7 @@ def analyze_audio():
                 rtype="csv"
             )
             print(f"✅ [{req_id[:8]}] AI Engine finished processing cleanly.", flush=True)
-        except TypeError:
-            # Fallback for minor positional signature variations across BirdNET releases
-            birdnet_analyze.analyze(
-                audio_input=wav_path,
-                output_path=out_dir,
-                lat=lat_val,
-                lon=lon_val,
-                min_conf=0.15,
-                rtype="csv"
-            )
-            print(f"✅ [{req_id[:8]}] AI Engine finished processing cleanly (Fallback).", flush=True)
+
         except Exception as e:
             print(f"❌ In-process execution error: {e}", flush=True)
 
@@ -106,7 +98,7 @@ def analyze_audio():
                             "score": float(row.get('Confidence', 0))
                         })
                 
-                # Sort by confidence and return top 5
+                # Sort by highest confidence and return top 5
                 results = sorted(results, key=lambda x: x['score'], reverse=True)[:5]
                 
                 print(f"🎉 [{req_id[:8]}] Success! Returning top {len(results)} matches.", flush=True)
@@ -118,6 +110,7 @@ def analyze_audio():
         return {"results": []}
 
     finally:
+        # Garbage cleanup
         if os.path.exists(raw_path): os.remove(raw_path)
         if os.path.exists(wav_path): os.remove(wav_path)
         if os.path.exists(out_dir): shutil.rmtree(out_dir)
