@@ -58,27 +58,26 @@ def analyze_audio_request():
             response.headers['Access-Control-Allow-Origin'] = '*'
             return {"error": f"Audio Conversion Failed: {e.stderr.decode()}"}
 
-        # Proven CLI flags that worked in your original stable build
+        # 💡 FIX: Passed wav_path as a positional argument + replaced --threads with --n_workers
         cmd = [
             sys.executable, "-m", "birdnet_analyzer.analyze",
-            "-i", wav_path,
             "-o", out_dir,
             "--rtype", "csv",
             "--lat", str(user_lat),
             "--lon", str(user_lon),
             "--min_conf", "0.15",
-            "--threads", "1"
+            "--n_workers", "1",
+            wav_path  # Positional INPUT argument at the end
         ]
         
         print(f"🚀 [{req_id[:8]}] Launching Cornell AI engine...", flush=True)
         
         try:
-            # Execute with environmental thread limits enforced
             process = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
             if process.returncode != 0:
-                print(f"⚠️ CLI Warning/Error Output: {process.stderr}", flush=True)
+                print(f"⚠️ CLI Error Output: {process.stderr}", flush=True)
             else:
-                print(f"✅ [{req_id[:8]}] AI Engine finished processing.", flush=True)
+                print(f"✅ [{req_id[:8]}] AI Engine finished processing cleanly.", flush=True)
         except subprocess.TimeoutExpired:
             response.headers['Access-Control-Allow-Origin'] = '*'
             return {"error": "AI Engine timed out."}
@@ -115,5 +114,5 @@ def analyze_audio_request():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
-    print(f"🟢 Stable CLI-mode server booting on port {port}...", flush=True)
+    print(f"🟢 Positional CLI server booting on port {port}...", flush=True)
     run(host='0.0.0.0', port=port)
