@@ -13,29 +13,61 @@ import onnxruntime as ort
 from bottle import route, run, request, response
 
 IS_BUSY = False
-LOCAL_MODEL = '/app/models/BirdNET_GLOBAL_6K_V2.4_Model_FP32.onnx'
 
-def locate_onnx_model():
-    if os.path.exists(LOCAL_MODEL):
-        return LOCAL_MODEL
-    possible_paths = glob.glob('/app/**/*.onnx', recursive=True) + \
-                     glob.glob('/usr/local/lib/python3.11/site-packages/**/*.onnx', recursive=True)
-    if possible_paths:
-        return possible_paths[0]
+def find_onnx_model():
+    """Finds the pre-packaged ONNX model file inside site-packages or local paths."""
+    patterns = [
+        '/usr/local/lib/python3.11/site-packages/birdnet_analyzer/model/*.onnx',
+        '/usr/local/lib/python3.11/site-packages/**/*.onnx',
+        '/app/**/*.onnx'
+    ]
+    for pattern in patterns:
+        matches = glob.glob(pattern, recursive=True)
+        if matches:
+            return matches[0]
     return None
 
+def find_labels_file():
+    """Finds the species labels.txt file inside birdnet_analyzer package."""
+    patterns = [
+        '/usr/local/lib/python3.11/site-packages/birdnet_analyzer/model/*labels*.txt',
+        '/usr/local/lib/python3.11/site-packages/**/*labels*.txt',
+        '/app/**/*labels*.txt'
+    ]
+    for pattern in patterns:
+        matches = glob.glob(pattern, recursive=True)
+        if matches:
+            return matches[0]
+    return None
+
+MODEL_PATH = find_onnx_model()
+LABELS_PATH = find_labels_file()
 ORT_SESSION = None
+SPECIES_LABELS = []
+
+def load_labels():
+    global SPECIES_LABELS, LABELS_PATH
+    if not SPECIES_LABELS and LABELS_PATH and os.path.exists(LABELS_PATH):
+        try:
+            with open(LABELS_PATH, 'r', encoding='utf-8') as f:
+                SPECIES_LABELS = [line.strip() for line in f if line.strip()]
+            print(f"✅ Loaded {len(SPECIES_LABELS)} species labels from {LABELS_PATH}", flush=True)
+        except Exception as e:
+            print(f"⚠️ Error reading labels: {e}", flush=True)
 
 def get_onnx_session():
-    global ORT_SESSION
+    global ORT_SESSION, MODEL_PATH
     if ORT_SESSION is None:
-        model_path = locate_onnx_model()
-        if model_path and os.path.exists(model_path):
+        if not MODEL_PATH:
+            MODEL_PATH = find_onnx_model()
+        if MODEL_PATH and os.path.exists(MODEL_PATH):
             opts = ort.SessionOptions()
             opts.intra_op_num_threads = 1
             opts.inter_op_num_threads = 1
-            ORT_SESSION = ort.InferenceSession(model_path, opts, providers=['CPUExecutionProvider'])
-            print(f"✅ ONNX model loaded cleanly into memory from {model_path}", flush=True)
+            ORT_SESSION = ort.InferenceSession(MODEL_PATH, opts, providers=['CPUExecutionProvider'])
+            print(f"✅ ONNX engine initialized cleanly from {MODEL_PATH}", flush=True)
+        else:
+            print("❌ No valid ONNX model file found!", flush=True)
     return ORT_SESSION
 
 @route('/ping', method=['GET', 'OPTIONS'])
@@ -109,6 +141,14 @@ def analyze_audio_request():
 
         print(f"🚀 [{req_id[:8]}] Running ONNX inference...", flush=True)
 
+        load_labels()
+        session = get_onnx_session()
+
+        if not session:
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return {"error": "Model initialization failed"}
+
+        # Read 48kHz WAV PCM signal
         rate, data = wav.read(wav_path)
         
         if data.dtype == np.int16:
@@ -129,34 +169,35 @@ def analyze_audio_request():
         if not chunks:
             chunks.append(sig[:min_samples])
 
-        session = get_onnx_session()
+        input_name = session.get_inputs()[0].name
         results_map = {}
 
-        if session:
-            input_name = session.get_inputs()[0].name
+        for chunk in chunks:
+            in_data = np.expand_dims(chunk, axis=0).astype(np.float32)
+            outputs = session.run(None, {input_name: in_data})
+            scores = outputs[0][0]
             
-            for chunk in chunks:
-                in_data = np.expand_dims(chunk, axis=0).astype(np.float32)
-                outputs = session.run(None, {input_name: in_data})
-                scores = outputs[0][0]
-                
-                for idx, score in enumerate(scores):
-                    if score >= 0.03:
-                        sp_name = f"Species_{idx}"
-                        if sp_name not in results_map or score > results_map[sp_name]:
-                            results_map[sp_name] = float(score)
+            for idx, score in enumerate(scores):
+                if score >= 0.03:
+                    label = SPECIES_LABELS[idx] if idx < len(SPECIES_LABELS) else f"Species_{idx}"
+                    if label not in results_map or score > results_map[label]:
+                        results_map[label] = float(score)
 
         formatted_results = []
-        for sp, score in results_map.items():
+        for label, score in results_map.items():
+            parts = label.split('_')
+            sci_name = parts[0] if len(parts) > 0 else label
+            com_name = parts[1] if len(parts) > 1 else label
+            
             formatted_results.append({
-                "speciesCode": sp,
-                "commonName": sp,
+                "speciesCode": sci_name,
+                "commonName": com_name,
                 "score": round(score, 3)
             })
 
         formatted_results = sorted(formatted_results, key=lambda x: x['score'], reverse=True)[:5]
         
-        print(f"🎉 [{req_id[:8]}] Success! Returning top {len(formatted_results)} matches.", flush=True)
+        print(f"🎉 [{req_id[:8]}] Success! Returning top {len(formatted_results)} species matches.", flush=True)
         response.headers['Access-Control-Allow-Origin'] = '*' 
         return {"results": formatted_results}
 
@@ -173,5 +214,5 @@ def analyze_audio_request():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
-    print(f"🟢 Pure ONNX light server booting on port {port}...", flush=True)
+    print(f"🟢 Direct ONNX BirdNET server booting on port {port}...", flush=True)
     run(host='0.0.0.0', port=port)
