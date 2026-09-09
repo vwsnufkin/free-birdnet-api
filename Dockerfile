@@ -1,22 +1,20 @@
-# Use a lightweight Python environment
-FROM python:3.11-slim
+FROM python:3.10-slim
 
-# Install system audio libraries required to read sound waves
-RUN apt-get update && apt-get install -y git ffmpeg libsndfile1 && rm -rf /var/lib/apt/lists/*
+# Install system dependencies like ffmpeg
+RUN apt-get update && apt-get install -y ffmpeg git && rm -rf /var/lib/apt/lists/*
 
-# Download the Official Cornell BirdNET-Analyzer
-RUN git clone https://github.com/birdnet-team/BirdNET-Analyzer.git /app
 WORKDIR /app
 
-# The golden rule: Let Cornell's official installer handle the AI dependencies, 
-# and just add 'bottle' for our web server.
-RUN pip install --no-cache-dir . bottle
+# Copy requirement files and install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy our custom web server script from GitHub into the AI engine
-COPY server.py /app/server.py
+# Copy the rest of your application code (including preload_models.py and server.py)
+COPY . .
 
-# Open the web port
-EXPOSE 8080
+# 💡 ADD THIS LINE: Downloads AI models directly into the Docker image layers at build time
+RUN python preload_models.py
 
-# Start the API server to listen for file uploads from your website
+# Expose port and start your server
+EXPOSE 10000
 CMD ["python", "server.py"]
