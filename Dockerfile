@@ -6,26 +6,18 @@ ENV OMP_NUM_THREADS=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
+    curl \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Install huggingface_hub to reliably download LFS binary files
-RUN pip install --no-cache-dir huggingface_hub
+# Download official BirdNET V2.4 FP32 ONNX model & labels from HuggingFace CDN
+RUN mkdir -p /app/models && \
+    curl -fL "https://huggingface.co/mcguirep/birdnet-analyzer/resolve/main/BirdNET_GLOBAL_6K_V2.4_Model_FP32.onnx" -o /app/models/model.onnx && \
+    curl -fL "https://huggingface.co/mcguirep/birdnet-analyzer/resolve/main/BirdNET_GLOBAL_6K_V2.4_Labels.txt" -o /app/models/labels.txt
 
-# Download official BirdNET weights & labels via HuggingFace Hub API
-RUN mkdir -p /app/models && python3 -c "\
-from huggingface_hub import hf_hub_download; \
-import shutil, os; \
-print('Downloading BirdNET V2.4 ONNX model...', flush=True); \
-model_path = hf_hub_download(repo_id='birdnet-team/BirdNET-Analyzer', filename='birdnet_analyzer/model/BirdNET_GLOBAL_6K_V2.4_Model_FP32.onnx'); \
-shutil.copy(model_path, '/app/models/model.onnx'); \
-label_path = hf_hub_download(repo_id='birdnet-team/BirdNET-Analyzer', filename='birdnet_analyzer/model/labels.txt'); \
-shutil.copy(label_path, '/app/models/labels.txt'); \
-print('Downloaded model size:', os.path.getsize('/app/models/model.onnx'), 'bytes', flush=True)"
-
-# Verify the binary is larger than 100MB
+# Verify the ONNX model binary downloaded successfully and is larger than 100MB
 RUN test -s /app/models/model.onnx && test $(wc -c < /app/models/model.onnx) -gt 100000000
 
 COPY . .
