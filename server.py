@@ -26,7 +26,7 @@ def load_labels():
         try:
             with open(LABELS_PATH, 'r', encoding='utf-8') as f:
                 SPECIES_LABELS = [line.strip() for line in f if line.strip()]
-            print(f"✅ Successfully loaded {len(SPECIES_LABELS)} species labels.", flush=True)
+            print(f"✅ Loaded {len(SPECIES_LABELS)} species labels.", flush=True)
         except Exception as e:
             print(f"⚠️ Error reading labels file: {e}", flush=True)
 
@@ -98,7 +98,6 @@ def analyze_audio_request():
         print(f"✅ [{req_id[:8]}] Audio file saved. Converting format...", flush=True)
 
         try:
-            # Convert audio input to strict 48kHz mono 16-bit PCM WAV
             subprocess.run([
                 "ffmpeg", "-y", "-i", raw_path, 
                 "-filter:a", "volume=10dB", 
@@ -120,7 +119,6 @@ def analyze_audio_request():
             response.headers['Access-Control-Allow-Origin'] = '*'
             return {"results": []}
 
-        # Read 48kHz WAV audio samples
         rate, data = wav.read(wav_path)
         
         if data.dtype == np.int16:
@@ -128,7 +126,6 @@ def analyze_audio_request():
         else:
             sig = data.astype(np.float32)
 
-        # 3 seconds @ 48kHz = 144,000 samples required by BirdNET V2.4
         min_samples = 144000
         if len(sig) < min_samples:
             sig = np.pad(sig, (0, min_samples - len(sig)))
@@ -151,7 +148,7 @@ def analyze_audio_request():
             scores = outputs[0][0]
             
             for idx, score in enumerate(scores):
-                if score >= 0.03: # 3% confidence filter
+                if score >= 0.03:
                     label = SPECIES_LABELS[idx] if idx < len(SPECIES_LABELS) else f"Species_{idx}"
                     if label not in results_map or score > results_map[label]:
                         results_map[label] = float(score)
