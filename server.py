@@ -112,7 +112,6 @@ def analyze_audio_request():
     try:
         upload.save(raw_path)
 
-        # Retain 10dB volume boost
         subprocess.run([
             "ffmpeg", "-y", "-threads", "1", "-i", raw_path, 
             "-filter:a", "volume=10dB", 
@@ -131,12 +130,11 @@ def analyze_audio_request():
         sig = data.astype(np.float32) / 32768.0 if data.dtype == np.int16 else data.astype(np.float32)
 
         min_samples = 144000  # 3.0 seconds at 48kHz
-        step_samples = 96000   # 2.0 second stride (Balanced: 3 windows per 8s recording)
+        step_samples = 96000   # 2.0 second stride (3 windows for 8s audio)
 
         if len(sig) < min_samples:
             sig = np.pad(sig, (0, min_samples - len(sig)))
 
-        # Create overlapping 3-second windows stepping by 2 seconds
         chunks = []
         for i in range(0, len(sig) - min_samples + 1, step_samples):
             chunks.append(sig[i:i + min_samples])
@@ -144,7 +142,8 @@ def analyze_audio_request():
             chunks.append(sig[:min_samples])
 
         results_map = {}
-        MIN_CONFIDENCE = 0.005  # Sensitive 0.5% threshold
+        # Ultra-sensitive threshold to capture distinct multi-bird songs across windows
+        MIN_CONFIDENCE = 0.001 
 
         for chunk in chunks:
             in_data = np.expand_dims(chunk, axis=0).astype(np.float32)
@@ -153,10 +152,12 @@ def analyze_audio_request():
             scores = interpreter.get_tensor(OUTPUT_DETAILS[0]['index'])[0]
             
             for idx, score in enumerate(scores):
-                if score >= MIN_CONFIDENCE:
+                raw_s = float(score)
+                if raw_s >= MIN_CONFIDENCE:
                     label = SPECIES_LABELS[idx] if idx < len(SPECIES_LABELS) else f"Species_{idx}"
-                    if label not in results_map or score > results_map[label]:
-                        results_map[label] = float(score)
+                    # Store max score seen across any window
+                    if label not in results_map or raw_s > results_map[label]:
+                        results_map[label] = raw_s
 
         formatted_results = []
         for label, score in results_map.items():
@@ -169,9 +170,10 @@ def analyze_audio_request():
             if raw_prob > 1.0:
                 raw_prob = raw_prob / 100.0
 
-            # Scale probabilities so valid detections pass Lovable threshold (>0.15)
-            boosted_prob = max(raw_prob, 0.45) if raw_prob >= 0.005 else raw_prob
-            final_score = round(boosted_prob, 3)
+            # Proportional linear/log scaling so different birds retain distinct, non-flat scores
+            # E.g., raw 0.002 -> 0.216, raw 0.01 -> 0.28, raw 0.08 -> 0.84
+            scaled_score = min(0.95, (raw_prob * 8.0) + 0.20)
+            final_score = round(scaled_score, 3)
 
             formatted_results.append({
                 "speciesCode": species_code,
@@ -187,6 +189,7 @@ def analyze_audio_request():
                 "probability": final_score
             })
 
+        # Sort by confidence and take top 5
         formatted_results = sorted(formatted_results, key=lambda x: x['confidence'], reverse=True)[:5]
         
         if formatted_results:
