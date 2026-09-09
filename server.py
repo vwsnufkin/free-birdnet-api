@@ -12,58 +12,32 @@ import scipy.io.wavfile as wav
 import onnxruntime as ort
 from bottle import route, run, request, response
 
-# Import birdnet_analyzer internals
-import birdnet_analyzer.config as cfg
-from birdnet_analyzer import model as bmodel
-from birdnet_analyzer import labels as blabels
-
 IS_BUSY = False
 
-def get_onnx_and_label_paths():
-    """Configures ONNX in birdnet_analyzer and locates file paths."""
-    try:
-        cfg.MODEL_TYPE = 'onnx'
-        bmodel.load_model()
-        blabels.load_labels()
-    except Exception as e:
-        print(f"⚠️ Model load warning: {e}", flush=True)
+def locate_model_files():
+    """Locates ONNX model file and labels.txt file on disk."""
+    model_path = '/app/models/model.onnx'
+    labels_path = '/app/models/labels.txt'
 
-    model_path = None
-    labels_path = None
-
-    search_dirs = [
-        getattr(cfg, 'MODEL_PATH', None),
-        '/root/.cache',
-        '/usr/local/lib/python3.11/site-packages/birdnet_analyzer',
-        '/app'
-    ]
-
-    for sd in search_dirs:
-        if sd and isinstance(sd, str) and os.path.exists(sd):
-            if sd.endswith('.onnx'):
-                model_path = sd
+    if not os.path.exists(model_path):
+        candidates = glob.glob('/root/.cache/**/*.onnx', recursive=True) + \
+                     glob.glob('/usr/local/lib/python3.11/site-packages/**/*.onnx', recursive=True) + \
+                     glob.glob('/app/**/*.onnx', recursive=True)
+        for c in candidates:
+            if os.path.getsize(c) > 10000000:  # > 10MB
+                model_path = c
                 break
-            elif os.path.isdir(sd):
-                matches = glob.glob(os.path.join(sd, '**/*.onnx'), recursive=True)
-                if matches:
-                    model_path = matches[0]
-                    break
 
-    for sd in search_dirs:
-        if sd and isinstance(sd, str) and os.path.exists(sd):
-            if sd.endswith('.txt'):
-                labels_path = sd
-                break
-            elif os.path.isdir(sd):
-                matches = glob.glob(os.path.join(sd, '**/*label*.txt'), recursive=True) or \
-                          glob.glob(os.path.join(sd, '**/labels.txt'), recursive=True)
-                if matches:
-                    labels_path = matches[0]
-                    break
+    if not os.path.exists(labels_path):
+        candidates = glob.glob('/root/.cache/**/*label*.txt', recursive=True) + \
+                     glob.glob('/usr/local/lib/python3.11/site-packages/**/*label*.txt', recursive=True) + \
+                     glob.glob('/app/**/*label*.txt', recursive=True)
+        if candidates:
+            labels_path = candidates[0]
 
     return model_path, labels_path
 
-MODEL_PATH, LABELS_PATH = get_onnx_and_label_paths()
+MODEL_PATH, LABELS_PATH = locate_model_files()
 ORT_SESSION = None
 SPECIES_LABELS = []
 
@@ -71,7 +45,7 @@ def load_labels():
     global SPECIES_LABELS, LABELS_PATH
     if not SPECIES_LABELS:
         if not LABELS_PATH or not os.path.exists(LABELS_PATH):
-            _, LABELS_PATH = get_onnx_and_label_paths()
+            _, LABELS_PATH = locate_model_files()
             
         if LABELS_PATH and os.path.exists(LABELS_PATH):
             try:
@@ -85,14 +59,14 @@ def init_onnx_session():
     global ORT_SESSION, MODEL_PATH
     if ORT_SESSION is None:
         if not MODEL_PATH or not os.path.exists(MODEL_PATH):
-            MODEL_PATH, _ = get_onnx_and_label_paths()
+            MODEL_PATH, _ = locate_model_files()
             
         if MODEL_PATH and os.path.exists(MODEL_PATH):
             opts = ort.SessionOptions()
             opts.intra_op_num_threads = 1
             opts.inter_op_num_threads = 1
             ORT_SESSION = ort.InferenceSession(MODEL_PATH, opts, providers=['CPUExecutionProvider'])
-            print(f"🟢 ONNX Session initialized from {MODEL_PATH}", flush=True)
+            print(f"🟢 Direct ONNX Session initialized from {MODEL_PATH}", flush=True)
         else:
             print(f"❌ Could not resolve valid ONNX model file path on disk!", flush=True)
     return ORT_SESSION
