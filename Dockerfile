@@ -4,32 +4,26 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV OMP_NUM_THREADS=1
 
+# Install git, ffmpeg, and ca-certificates
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
     ffmpeg \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
+# Clone only the main branch (shallow clone) to get the latest model weights & labels
+RUN git clone --depth 1 https://github.com/birdnet-team/BirdNET-Analyzer.git /tmp/birdnet-repo && \
+    mkdir -p /app/models && \
+    cp /tmp/birdnet-repo/birdnet_analyzer/checkpoints/V2.4/BirdNET_GLOBAL_6K_V2.4_Model_FP32.onnx /app/models/model.onnx && \
+    cp /tmp/birdnet-repo/birdnet_analyzer/labels/V2.4/BirdNET_GLOBAL_6K_V2.4_Labels.txt /app/models/labels.txt && \
+    rm -rf /tmp/birdnet-repo
+
 COPY . .
 
 RUN pip install --no-cache-dir --upgrade pip
-RUN pip install --no-cache-dir bottle onnxruntime "numpy<2.0.0" scipy birdnet-analyzer
-
-# Force-download the ONNX model and labels file directly into /app/models during build
-RUN mkdir -p /app/models && python3 -c "\
-import os, glob, shutil; \
-import birdnet_analyzer.config as cfg; \
-import birdnet_analyzer.model as bmodel; \
-import birdnet_analyzer.labels as blabels; \
-cfg.MODEL_TYPE = 'onnx'; \
-bmodel.load_model(); \
-blabels.load_labels(); \
-onnx_files = glob.glob('/root/.cache/**/*.onnx', recursive=True) + glob.glob('/usr/local/lib/python3.11/site-packages/**/*.onnx', recursive=True); \
-label_files = glob.glob('/root/.cache/**/*label*.txt', recursive=True) + glob.glob('/usr/local/lib/python3.11/site-packages/**/*label*.txt', recursive=True); \
-if onnx_files: shutil.copy(onnx_files[0], '/app/models/model.onnx'); \
-if label_files: shutil.copy(label_files[0], '/app/models/labels.txt'); \
-print('Baking complete. Models in /app/models:', os.listdir('/app/models'), flush=True)" || true
+RUN pip install --no-cache-dir bottle onnxruntime "numpy<2.0.0" scipy
 
 EXPOSE 10000
 CMD ["python", "server.py"]
