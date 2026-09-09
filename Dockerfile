@@ -16,13 +16,19 @@ COPY . .
 
 RUN pip install --no-cache-dir --upgrade pip
 RUN pip install --no-cache-dir --no-deps -r requirements.txt
-RUN pip install --no-cache-dir bottle onnxruntime "numpy<2.0.0" scipy
+RUN pip install --no-cache-dir bottle onnxruntime "numpy<2.0.0" scipy huggingface_hub
 
-# Download official binary ONNX model from GitHub LFS media storage & raw labels file
-RUN mkdir -p /app/models && \
-    curl -fL "https://media.githubusercontent.com/media/birdnet-team/BirdNET-Analyzer/main/birdnet_analyzer/model/BirdNET_GLOBAL_6K_V2.4_Model_FP32.onnx" -o /app/models/BirdNET_Model.onnx && \
-    curl -fL "https://raw.githubusercontent.com/birdnet-team/BirdNET-Analyzer/main/birdnet_analyzer/model/labels.txt" -o /app/models/labels.txt && \
-    test $(wc -c < /app/models/BirdNET_Model.onnx) -gt 100000000
+# Download official model weights and labels using Python's verified downloader
+RUN mkdir -p /app/models && python3 -c "\
+import urllib.request, os; \
+from huggingface_hub import hf_hub_download; \
+print('Downloading BirdNET ONNX model...', flush=True); \
+model_path = hf_hub_download(repo_id='birdnet-team/BirdNET-Analyzer', filename='birdnet_analyzer/model/BirdNET_GLOBAL_6K_V2.4_Model_FP32.onnx'); \
+os.system(f'cp {model_path} /app/models/BirdNET_Model.onnx'); \
+label_path = hf_hub_download(repo_id='birdnet-team/BirdNET-Analyzer', filename='birdnet_analyzer/model/labels.txt'); \
+os.system(f'cp {label_path} /app/models/labels.txt'); \
+print('Downloaded model size:', os.path.getsize('/app/models/BirdNET_Model.onnx'), 'bytes', flush=True); \
+" && test $(wc -c < /app/models/BirdNET_Model.onnx) -gt 100000000
 
 EXPOSE 10000
 CMD ["python", "server.py"]
