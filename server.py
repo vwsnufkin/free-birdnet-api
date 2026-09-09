@@ -1,44 +1,43 @@
 import os
-os.environ['BIRDNET_USE_ONNX'] = '1'
-os.environ['BIRDNET_MODEL_PATH'] = '/app/model_cache'
-os.environ['XDG_CACHE_HOME'] = '/app/model_cache'
-os.environ['TORCH_HOME'] = '/app/model_cache'
-os.environ['HF_HOME'] = '/app/model_cache'
-
 os.environ['OMP_NUM_THREADS'] = '1'
-os.environ['TF_NUM_INTRAOP_THREADS'] = '1'
-os.environ['TF_NUM_INTEROP_THREADS'] = '1'
 
 import csv
 import sys
-import shutil
 import glob
 import uuid
 import gc
 import subprocess
+import numpy as np
+import scipy.io.wavfile as wav
+import onnxruntime as ort
 from bottle import route, run, request, response
+
+# Load species list directly from installed package resources
+from birdnet_analyzer import species
 
 IS_BUSY = False
 
-def run_onnx_birdnet(wav_path, out_dir, lat, lon):
-    """Run BirdNET using lightweight ONNX engine in a single-threaded process."""
-    cmd = [
-        sys.executable, "-m", "birdnet_analyzer.analyze",
-        "-o", out_dir,
-        "--rtype", "csv",
-        "--lat", str(lat),
-        "--lon", str(lon),
-        "--min_conf", "0.01",
-        "-t", "1",
-        "-b", "1",
-        wav_path
-    ]
-    env = os.environ.copy()
-    env['XDG_CACHE_HOME'] = '/app/model_cache'
-    env['BIRDNET_MODEL_PATH'] = '/app/model_cache'
-    env['BIRDNET_USE_ONNX'] = '1'
-    
-    return subprocess.run(cmd, capture_output=True, text=True, env=env)
+# Find the installed ONNX model file inside site-packages
+def locate_onnx_model():
+    possible_paths = glob.glob('/usr/local/lib/python3.11/site-packages/birdnet_analyzer/model/*.onnx') + \
+                     glob.glob('/usr/local/lib/python3.11/site-packages/birdnet_analyzer/**/*.onnx', recursive=True) + \
+                     glob.glob('/app/**/*.onnx', recursive=True)
+    if possible_paths:
+        return possible_paths[0]
+    return None
+
+MODEL_PATH = locate_onnx_model()
+ORT_SESSION = None
+
+def get_onnx_session():
+    global ORT_SESSION, MODEL_PATH
+    if ORT_SESSION is None and MODEL_PATH and os.path.exists(MODEL_PATH):
+        opts = ort.SessionOptions()
+        opts.intra_op_num_threads = 1
+        opts.inter_op_num_threads = 1
+        ORT_SESSION = ort.InferenceSession(MODEL_PATH, opts, providers=['CPUExecutionProvider'])
+        print(f"✅ ONNX model loaded into memory from {MODEL_PATH}", flush=True)
+    return ORT_SESSION
 
 @route('/ping', method=['GET', 'OPTIONS'])
 def ping_server():
@@ -81,85 +80,118 @@ def analyze_audio_request():
         return {"error": "No audio file provided"}
 
     try:
-        user_lat = float(request.forms.get('lat', '-1'))
-        user_lon = float(request.forms.get('lon', '-1'))
+        user_lat = float(request.forms.get('lat', '50.85'))
+        user_lon = float(request.forms.get('lon', '4.35'))
     except ValueError:
-        user_lat, user_lon = -1.0, -1.0
+        user_lat, user_lon = 50.85, 4.35
 
     print(f"🌍 GPS Location received: Lat {user_lat}, Lon {user_lon}", flush=True)
 
     req_id = str(uuid.uuid4())
     raw_path = f'/tmp/raw_{req_id}'
     wav_path = f'/tmp/rec_{req_id}.wav'
-    out_dir = f'/tmp/birds_{req_id}'
 
     try:
         IS_BUSY = True
         upload.save(raw_path)
         print(f"✅ [{req_id[:8]}] Audio file saved. Converting format...", flush=True)
 
+        # Convert audio to strict 48kHz mono 16-bit PCM WAV using ffmpeg
         try:
-            subprocess.run(["ffmpeg", "-y", "-i", raw_path, "-filter:a", "volume=10dB", "-ar", "48000", "-ac", "1", wav_path], check=True, capture_output=True)
+            subprocess.run([
+                "ffmpeg", "-y", "-i", raw_path, 
+                "-filter:a", "volume=10dB", 
+                "-ar", "48000", "-ac", "1", "-c:a", "pcm_s16le", 
+                wav_path
+            ], check=True, capture_output=True)
             print(f"✅ [{req_id[:8]}] Audio successfully converted.", flush=True)
         except subprocess.CalledProcessError as e:
             response.headers['Access-Control-Allow-Origin'] = '*'
             return {"error": f"Audio Conversion Failed: {e.stderr.decode()}"}
 
-        print(f"🚀 [{req_id[:8]}] Running ONNX BirdNET engine...", flush=True)
-        os.makedirs(out_dir, exist_ok=True)
-
-        proc = run_onnx_birdnet(wav_path, out_dir, user_lat, user_lon)
+        print(f"🚀 [{req_id[:8]}] Filtering species list by GPS...", flush=True)
         
-        if proc.stdout:
-            print(f"🔍 [Engine Log]: {proc.stdout.strip()}", flush=True)
-        if proc.stderr:
-            print(f"⚠️ [Engine Err]: {proc.stderr.strip()}", flush=True)
+        # Get localized species filter list
+        local_species = species.get_species_list(user_lat, user_lon, 0.05)
+        print(f"🌍 Found {len(local_species)} species relevant to coordinates ({user_lat}, {user_lon})", flush=True)
 
-        print(f"✅ [{req_id[:8]}] AI Engine finished processing cleanly.", flush=True)
+        # Read converted audio WAV signal
+        rate, data = wav.read(wav_path)
+        
+        # Normalize audio signal float32 between -1.0 and 1.0
+        if data.dtype == np.int16:
+            sig = data.astype(np.float32) / 32768.0
+        else:
+            sig = data.astype(np.float32)
 
-        results = []
-        if os.path.exists(out_dir):
-            csv_files = glob.glob(f"{out_dir}/*.csv") + glob.glob(f"{out_dir}/*/*.csv")
-            print(f"📁 [{req_id[:8]}] CSV files found on disk: {csv_files}", flush=True)
+        # Pad audio if shorter than 3 seconds (144,000 samples at 48kHz)
+        min_samples = 144000
+        if len(sig) < min_samples:
+            sig = np.pad(sig, (0, min_samples - len(sig)))
+
+        # Chunk audio signal into 3-second segments
+        chunks = []
+        step = 144000
+        for i in range(0, len(sig) - min_samples + 1, step):
+            chunk = sig[i:i + min_samples]
+            chunks.append(chunk)
+
+        if not chunks:
+            chunks.append(sig[:min_samples])
+
+        session = get_onnx_session()
+        
+        results_map = {}
+
+        if session:
+            input_name = session.get_inputs()[0].name
             
-            if csv_files:
-                with open(csv_files[0], 'r') as f:
-                    reader = csv.DictReader(f)
-                    for row in reader:
-                        # Case-insensitive column extraction
-                        scientific = row.get('Scientific name') or row.get('Scientific Name') or row.get('Scientific_Name') or ''
-                        common = row.get('Common name') or row.get('Common Name') or row.get('Common_Name') or ''
-                        conf = row.get('Confidence') or row.get('confidence') or 0.0
-                        
-                        try:
-                            score = float(conf)
-                        except ValueError:
-                            score = 0.0
-
-                        if scientific or common:
-                            results.append({
-                                "speciesCode": scientific,
-                                "commonName": common,
-                                "score": score
-                            })
+            for chunk in chunks:
+                # Shape input array to (1, 144000)
+                in_data = np.expand_dims(chunk, axis=0).astype(np.float32)
                 
-                results = sorted(results, key=lambda x: x['score'], reverse=True)[:5]
-                print(f"🎉 [{req_id[:8]}] Success! Returning top {len(results)} local matches.", flush=True)
-                response.headers['Access-Control-Allow-Origin'] = '*' 
-                return {"results": results}
+                # Execute pure ONNX inference
+                outputs = session.run(None, {input_name: in_data})
+                scores = outputs[0][0]  # Raw probabilities array
+                
+                # Filter results matching regional species
+                for idx, score in enumerate(scores):
+                    if score >= 0.03:  # 3% confidence threshold
+                        # Map index to species if available
+                        sp_name = local_species[idx] if idx < len(local_species) else f"Species_{idx}"
+                        if sp_name not in results_map or score > results_map[sp_name]:
+                            results_map[sp_name] = float(score)
+
+        formatted_results = []
+        for sp, score in results_map.items():
+            parts = sp.split('_')
+            sci_name = parts[0] if len(parts) > 0 else sp
+            com_name = parts[1] if len(parts) > 1 else sp
             
-        print(f"⚠️ [{req_id[:8]}] No CSV results generated.", flush=True)
+            formatted_results.append({
+                "speciesCode": sci_name,
+                "commonName": com_name,
+                "score": round(score, 3)
+            })
+
+        formatted_results = sorted(formatted_results, key=lambda x: x['score'], reverse=True)[:5]
+        
+        print(f"🎉 [{req_id[:8]}] Success! Returning top {len(formatted_results)} local matches.", flush=True)
         response.headers['Access-Control-Allow-Origin'] = '*' 
+        return {"results": formatted_results}
+
+    except Exception as e:
+        print(f"❌ Analysis error: {e}", flush=True)
+        response.headers['Access-Control-Allow-Origin'] = '*'
         return {"results": []}
 
     finally:
         if os.path.exists(raw_path): os.remove(raw_path)
         if os.path.exists(wav_path): os.remove(wav_path)
-        if os.path.exists(out_dir): shutil.rmtree(out_dir)
         IS_BUSY = False
         gc.collect()
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
-    print(f"🟢 Lightweight ONNX BirdNET server booting on port {port}...", flush=True)
+    print(f"🟢 Pure ONNX direct inference server booting on port {port}...", flush=True)
     run(host='0.0.0.0', port=port)
