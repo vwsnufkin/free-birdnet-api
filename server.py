@@ -17,6 +17,17 @@ from bottle import route, run, request, response
 # Global lock state to signal server status to Lovable
 IS_BUSY = False
 
+def warmup_models():
+    """Download and cache AI models on server startup before accepting traffic."""
+    print("⏳ Warming up BirdNET models on startup...", flush=True)
+    try:
+        from birdnet_analyzer import model, species
+        model.load_model()
+        species.get_species_list(50.85, 4.35, 0.15)
+        print("✅ Models warmed up and ready in cache!", flush=True)
+    except Exception as e:
+        print(f"⚠️ Warmup info: {e}", flush=True)
+
 @route('/ping', method=['GET', 'OPTIONS'])
 def ping_server():
     response.headers['Access-Control-Allow-Origin'] = '*'
@@ -46,7 +57,7 @@ def analyze_audio_request():
         response.status = 200
         return {}
 
-    # Lock out concurrent requests to protect RAM
+    # Lock out concurrent requests
     if IS_BUSY:
         response.status = 429
         return {"error": "Server is currently busy analyzing audio. Please try again in a few seconds."}
@@ -73,7 +84,6 @@ def analyze_audio_request():
         print(f"✅ [{req_id[:8]}] Audio file saved. Converting format...", flush=True)
 
         try:
-            # Convert input file to 48kHz WAV
             subprocess.run(["ffmpeg", "-y", "-i", raw_path, "-filter:a", "volume=5dB", "-ar", "48000", wav_path], check=True, capture_output=True)
             print(f"✅ [{req_id[:8]}] Audio successfully converted.", flush=True)
         except subprocess.CalledProcessError as e:
@@ -84,7 +94,6 @@ def analyze_audio_request():
         
         old_argv = sys.argv
         
-        # Configure CLI arguments within active process using pre-cached models
         sys.argv = [
             "birdnet_analyzer.analyze",
             "-o", out_dir,
@@ -97,7 +106,6 @@ def analyze_audio_request():
         ]
 
         try:
-            # Run BirdNET in-process using pre-cached model files
             runpy.run_module('birdnet_analyzer.analyze', run_name='__main__')
             print(f"✅ [{req_id[:8]}] AI Engine finished processing cleanly.", flush=True)
         except SystemExit:
@@ -120,7 +128,6 @@ def analyze_audio_request():
                             "score": float(row.get('Confidence', 0))
                         })
                 
-                # Return top 5 matches sorted by confidence score
                 results = sorted(results, key=lambda x: x['score'], reverse=True)[:5]
                 print(f"🎉 [{req_id[:8]}] Success! Returning top {len(results)} local matches.", flush=True)
                 response.headers['Access-Control-Allow-Origin'] = '*' 
@@ -131,7 +138,6 @@ def analyze_audio_request():
         return {"results": []}
 
     finally:
-        # Clean temporary files and unlock server
         if os.path.exists(raw_path): os.remove(raw_path)
         if os.path.exists(wav_path): os.remove(wav_path)
         if os.path.exists(out_dir): shutil.rmtree(out_dir)
@@ -139,6 +145,9 @@ def analyze_audio_request():
         gc.collect()
 
 if __name__ == '__main__':
+    # Execute model pre-load right as container boots
+    warmup_models()
+    
     port = int(os.environ.get('PORT', 10000))
     print(f"🟢 Location-aware pre-loaded server booting on port {port}...", flush=True)
     run(host='0.0.0.0', port=port)
