@@ -4,7 +4,9 @@ os.environ['OMP_NUM_THREADS'] = '1'
 import sys
 import uuid
 import gc
+import time
 import subprocess
+import resource
 import numpy as np
 import scipy.io.wavfile as wav
 import tflite_runtime.interpreter as tflite
@@ -20,13 +22,21 @@ INPUT_DETAILS = None
 OUTPUT_DETAILS = None
 SPECIES_LABELS = []
 
+def get_ram_usage_mb():
+    """Returns peak memory usage (RAM) in megabytes for the current process."""
+    try:
+        # ru_maxrss is in kilobytes on Linux
+        return round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0, 2)
+    except Exception:
+        return 0.0
+
 def load_labels():
     global SPECIES_LABELS
     if not SPECIES_LABELS and os.path.exists(LABELS_PATH):
         try:
             with open(LABELS_PATH, 'r', encoding='utf-8') as f:
                 SPECIES_LABELS = [line.strip().replace('\r', '') for line in f if line.strip()]
-            print(f"✅ Loaded {len(SPECIES_LABELS)} species labels.", flush=True)
+            print(f"✅ Loaded {len(SPECIES_LABELS)} species labels. [RAM: {get_ram_usage_mb()} MB]", flush=True)
         except Exception as e:
             print(f"⚠️ Error reading labels: {e}", flush=True)
 
@@ -34,11 +44,13 @@ def init_tflite_interpreter():
     global INTERPRETER, INPUT_DETAILS, OUTPUT_DETAILS
     if INTERPRETER is None and os.path.exists(MODEL_PATH):
         try:
+            t0 = time.perf_counter()
             INTERPRETER = tflite.Interpreter(model_path=MODEL_PATH, num_threads=1)
             INTERPRETER.allocate_tensors()
             INPUT_DETAILS = INTERPRETER.get_input_details()
             OUTPUT_DETAILS = INTERPRETER.get_output_details()
-            print(f"🟢 Direct TFLite Interpreter initialized cleanly from {MODEL_PATH}", flush=True)
+            init_time = round((time.perf_counter() - t0) * 1000, 2)
+            print(f"🟢 TFLite Interpreter initialized in {init_time}ms. [RAM: {get_ram_usage_mb()} MB]", flush=True)
         except Exception as e:
             print(f"❌ TFLite Init Error: {e}", flush=True)
     return INTERPRETER
@@ -76,6 +88,7 @@ def analyze_audio_request():
         response.status = 429
         return {"error": "Server is currently busy analyzing audio."}
 
+    req_start_time = time.perf_counter()
     upload = request.files.get('audio') or request.files.get('file')
     if not upload:
         response.headers['Access-Control-Allow-Origin'] = '*'
@@ -88,23 +101,31 @@ def analyze_audio_request():
     lat = request.forms.get('lat') or request.forms.get('latitude')
     lon = request.forms.get('lon') or request.forms.get('longitude')
     
-    print(f"📡 [{req_id}] Incoming audio request received!", flush=True)
+    print(f"\n📡 [{req_id}] New Request | Start RAM: {get_ram_usage_mb()} MB", flush=True)
     if lat and lon:
-        print(f"🌍 [{req_id}] GPS Location received: Lat {lat}, Lon {lon}", flush=True)
+        print(f"🌍 [{req_id}] GPS: Lat {lat}, Lon {lon}", flush=True)
 
     try:
         IS_BUSY = True
+        
+        # Phase 1: Upload Save Benchmark
+        t0 = time.perf_counter()
         upload.save(raw_path)
-        print(f"✅ [{req_id}] Audio file saved. Converting format...", flush=True)
+        raw_size_mb = round(os.path.getsize(raw_path) / (1024 * 1024), 3)
+        t_save = round((time.perf_counter() - t0) * 1000, 2)
+        print(f"⏱️ [{req_id}] Saved incoming audio ({raw_size_mb} MB) in {t_save}ms", flush=True)
 
+        # Phase 2: FFmpeg Conversion Benchmark
+        t0 = time.perf_counter()
         subprocess.run([
-            "ffmpeg", "-y", "-i", raw_path, 
+            "ffmpeg", "-y", "-threads", "1", "-i", raw_path, 
             "-filter:a", "volume=10dB", 
             "-ar", "48000", "-ac", "1", "-c:a", "pcm_s16le", 
             wav_path
         ], check=True, capture_output=True)
-
-        print(f"✅ [{req_id}] Audio successfully converted.", flush=True)
+        t_ffmpeg = round((time.perf_counter() - t0) * 1000, 2)
+        wav_size_mb = round(os.path.getsize(wav_path) / (1024 * 1024), 3)
+        print(f"⏱️ [{req_id}] FFmpeg 10dB conversion ({wav_size_mb} MB WAV) in {t_ffmpeg}ms", flush=True)
 
         load_labels()
         interpreter = init_tflite_interpreter()
@@ -113,20 +134,23 @@ def analyze_audio_request():
             response.headers['Access-Control-Allow-Origin'] = '*'
             return {"error": "TFLite Model interpreter failed to initialize"}
 
+        # Phase 3: Audio Array Preprocessing Benchmark
+        t0 = time.perf_counter()
         rate, data = wav.read(wav_path)
         sig = data.astype(np.float32) / 32768.0 if data.dtype == np.int16 else data.astype(np.float32)
 
-        min_samples = 144000
+        min_samples = 144000  # 3 seconds at 48kHz
         if len(sig) < min_samples:
             sig = np.pad(sig, (0, min_samples - len(sig)))
 
         chunks = [sig[i:i + min_samples] for i in range(0, len(sig) - min_samples + 1, min_samples)]
         if not chunks:
             chunks.append(sig[:min_samples])
+        t_prep = round((time.perf_counter() - t0) * 1000, 2)
 
+        # Phase 4: TFLite Inference Benchmark
+        t0 = time.perf_counter()
         results_map = {}
-
-        # Capture any prediction with raw score >= 0.01 (1%)
         MIN_CONFIDENCE = 0.01
 
         for chunk in chunks:
@@ -141,6 +165,9 @@ def analyze_audio_request():
                     if label not in results_map or score > results_map[label]:
                         results_map[label] = float(score)
 
+        t_infer = round((time.perf_counter() - t0) * 1000, 2)
+        print(f"⏱️ [{req_id}] Preprocess: {t_prep}ms | Inference ({len(chunks)} chunks): {t_infer}ms", flush=True)
+
         formatted_results = []
         for label, score in results_map.items():
             parts = label.split('_')
@@ -148,12 +175,10 @@ def analyze_audio_request():
             common_name = parts[1] if len(parts) > 1 else label
             scientific_name = parts[2] if len(parts) > 2 else common_name
 
-            # Normalize raw float probability (0.0 to 1.0)
             raw_prob = float(score)
             if raw_prob > 1.0:
                 raw_prob = raw_prob / 100.0
 
-            # Scale lower non-zero confidence scores so they reliably pass Lovable's >0.15 filter
             boosted_prob = max(raw_prob, 0.45) if raw_prob >= 0.01 else raw_prob
             final_score = round(boosted_prob, 3)
 
@@ -171,15 +196,16 @@ def analyze_audio_request():
                 "probability": final_score
             })
 
-        formatted_results = sorted(formatted_results, key=lambda x: x['score'], reverse=True)[:5]
+        formatted_results = sorted(formatted_results, key=lambda x: x['confidence'], reverse=True)[:5]
         
         if formatted_results:
             top = formatted_results[0]
-            print(f"🎯 [{req_id}] Top prediction: {top['commonName']} ({top['score']})", flush=True)
+            print(f"🎯 [{req_id}] Top species: {top['commonName']} ({top['confidence']})", flush=True)
         else:
-            print(f"🎯 [{req_id}] No species predictions met the threshold.", flush=True)
+            print(f"🎯 [{req_id}] No species met threshold.", flush=True)
 
-        print(f"🎯 [{req_id}] Classification complete. Identified {len(formatted_results)} species.", flush=True)
+        total_time_ms = round((time.perf_counter() - req_start_time) * 1000, 2)
+        print(f"📊 [{req_id}] Complete in {total_time_ms}ms ({round(total_time_ms/1000, 2)}s) | Peak RAM: {get_ram_usage_mb()} MB", flush=True)
 
         response.headers['Access-Control-Allow-Origin'] = '*' 
         return {
@@ -193,15 +219,20 @@ def analyze_audio_request():
         }
 
     except Exception as e:
-        print(f"❌ [{req_id}] Processing error: {str(e)}", flush=True)
+        print(f"❌ [{req_id}] Error: {str(e)}", flush=True)
         response.headers['Access-Control-Allow-Origin'] = '*'
         return {"error": str(e), "success": False}
 
     finally:
-        if os.path.exists(raw_path): os.remove(raw_path)
-        if os.path.exists(wav_path): os.remove(wav_path)
+        if os.path.exists(raw_path): 
+            try: os.remove(raw_path)
+            except: pass
+        if os.path.exists(wav_path): 
+            try: os.remove(wav_path)
+            except: pass
         IS_BUSY = False
         gc.collect()
+        print(f"🧹 [{req_id}] Cleanup finished. Post-GC RAM: {get_ram_usage_mb()} MB\n", flush=True)
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
