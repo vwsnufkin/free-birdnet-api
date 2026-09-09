@@ -1,13 +1,9 @@
 import os
-# Force cache directories to match Docker build phase
-os.environ['BIRDNET_MODEL_PATH'] = '/app/model_cache'
-os.environ['XDG_CACHE_HOME'] = '/app/model_cache'
-os.environ['TORCH_HOME'] = '/app/model_cache'
-os.environ['HF_HOME'] = '/app/model_cache'
-
+# Force TensorFlow/ONNX to run strictly single-threaded to cap memory under 300MB
 os.environ['OMP_NUM_THREADS'] = '1'
 os.environ['TF_NUM_INTRAOP_THREADS'] = '1'
 os.environ['TF_NUM_INTEROP_THREADS'] = '1'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 import csv
 import sys
@@ -18,28 +14,15 @@ import gc
 import subprocess
 from bottle import route, run, request, response
 
+# Import BirdNET modules into main process
+import birdnet_analyzer.analyze as analyzer
+import birdnet_analyzer.config as cfg
+
 IS_BUSY = False
 
-def run_birdnet_isolated(wav_path, out_dir, lat, lon):
-    """Executes BirdNET in an isolated subprocess to prevent sys.exit from killing Bottle."""
-    cmd = [
-        sys.executable, "-m", "birdnet_analyzer.analyze",
-        "-o", out_dir,
-        "--rtype", "csv",
-        "--lat", str(lat),
-        "--lon", str(lon),
-        "--min_conf", "0.05",
-        "-t", "1",
-        wav_path
-    ]
-    
-    # Pass cache environment variables to child process
-    env = os.environ.copy()
-    env['XDG_CACHE_HOME'] = '/app/model_cache'
-    env['BIRDNET_MODEL_PATH'] = '/app/model_cache'
-    
-    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
-    return result
+# Configure internal config parameters to conserve RAM
+cfg.THREADS = 1
+cfg.BATCH_SIZE = 1
 
 @route('/ping', method=['GET', 'OPTIONS'])
 def ping_server():
@@ -100,23 +83,40 @@ def analyze_audio_request():
         print(f"✅ [{req_id[:8]}] Audio file saved. Converting format...", flush=True)
 
         try:
+            # Convert audio to 48kHz mono WAV with ffmpeg
             subprocess.run(["ffmpeg", "-y", "-i", raw_path, "-filter:a", "volume=5dB", "-ar", "48000", "-ac", "1", wav_path], check=True, capture_output=True)
             print(f"✅ [{req_id[:8]}] Audio successfully converted.", flush=True)
         except subprocess.CalledProcessError as e:
             response.headers['Access-Control-Allow-Origin'] = '*'
             return {"error": f"Audio Conversion Failed: {e.stderr.decode()}"}
 
-        print(f"🚀 [{req_id[:8]}] Running BirdNET isolated inference...", flush=True)
+        print(f"🚀 [{req_id[:8]}] Running BirdNET direct inference...", flush=True)
         
         os.makedirs(out_dir, exist_ok=True)
 
-        # Run inference in subprocess
-        proc = run_birdnet_isolated(wav_path, out_dir, user_lat, user_lon)
-        
-        if proc.returncode != 0:
-            print(f"⚠️ Process notice: {proc.stderr[:300]}", flush=True)
+        # Intercept sys.exit so analyzer doesn't stop the Bottle server
+        old_exit = sys.exit
+        sys.exit = lambda code=0: None
 
-        print(f"✅ [{req_id[:8]}] AI Engine finished processing cleanly.", flush=True)
+        try:
+            # Set internal variables directly
+            cfg.FILE_PATH = wav_path
+            cfg.OUTPUT_PATH = out_dir
+            cfg.LATITUDE = user_lat
+            cfg.LONGITUDE = user_lon
+            cfg.MIN_CONFIDENCE = 0.05
+            cfg.RESULT_TYPES = ['csv']
+
+            # Run in-process analysis
+            analyzer.analyze_file((wav_path, out_dir, 0.05, user_lat, user_lon, -1, 0.15, None, 1.0, 0.0, True, False, False, False)) if hasattr(analyzer, 'analyze_file') else analyzer.main()
+            
+            print(f"✅ [{req_id[:8]}] AI Engine finished processing cleanly.", flush=True)
+        except SystemExit:
+            pass
+        except Exception as e:
+            print(f"⚠️ Inference info: {e}", flush=True)
+        finally:
+            sys.exit = old_exit
 
         results = []
         if os.path.exists(out_dir):
@@ -149,5 +149,5 @@ def analyze_audio_request():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
-    print(f"🟢 Isolated-cache BirdNET server booting on port {port}...", flush=True)
+    print(f"🟢 Direct memory-capped BirdNET server booting on port {port}...", flush=True)
     run(host='0.0.0.0', port=port)
