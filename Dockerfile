@@ -3,7 +3,7 @@ FROM python:3.11-slim
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 
-# Hardcode cache directories to a permanent location in /app
+# Hardcode model cache directories to a permanent location inside /app
 ENV BIRDNET_MODEL_PATH=/app/model_cache
 ENV XDG_CACHE_HOME=/app/model_cache
 ENV TORCH_HOME=/app/model_cache
@@ -21,7 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Create shared cache directory
+# Create shared model cache folder
 RUN mkdir -p /app/model_cache
 
 COPY . .
@@ -29,7 +29,7 @@ COPY . .
 RUN pip install --no-cache-dir --upgrade pip
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Download and bake models into /app/model_cache during build
+# Pre-download and bake models into /app/model_cache during image build
 RUN python -c "import os; os.environ['XDG_CACHE_HOME']='/app/model_cache'; from birdnet_analyzer import model, species; model.load_model(); species.get_species_list(50.85, 4.35, 0.15)" || true
 
 EXPOSE 10000
