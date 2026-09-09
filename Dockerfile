@@ -1,29 +1,28 @@
 FROM python:3.10-slim
 
-# Prevent interactive prompts during installation
 ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
 
-# Install essential system utilities and build dependencies
+# Install ffmpeg and git system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     git \
-    build-essential \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Upgrade pip, setuptools, and wheel to pull pre-compiled binary wheels
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+# Upgrade pip to ensure pre-compiled wheels are preferred
+RUN pip install --no-cache-dir --upgrade pip
 
-# Copy requirements and install dependencies
+# Install dependencies from requirements.txt
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application source code
+# Copy application files
 COPY . .
 
-# Enforce single-threaded execution to prevent RAM spikes
+# Environment variables for memory limit safety
 ENV OMP_NUM_THREADS=1
 ENV TF_NUM_INTRAOP_THREADS=1
 ENV TF_NUM_INTEROP_THREADS=1
