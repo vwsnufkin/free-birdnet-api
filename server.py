@@ -97,7 +97,6 @@ def analyze_audio_request():
         upload.save(raw_path)
         print(f"✅ [{req_id}] Audio file saved. Converting format...", flush=True)
 
-        # Fast conversion pass
         subprocess.run([
             "ffmpeg", "-y", "-i", raw_path, 
             "-filter:a", "volume=10dB", 
@@ -127,7 +126,7 @@ def analyze_audio_request():
 
         results_map = {}
 
-        # 1% threshold
+        # Low confidence threshold for testing
         MIN_CONFIDENCE = 0.01
 
         for chunk in chunks:
@@ -149,15 +148,20 @@ def analyze_audio_request():
             common_name = parts[1] if len(parts) > 1 else label
             scientific_name = parts[2] if len(parts) > 2 else common_name
 
+            # Comprehensive dictionary with all key variants
             formatted_results.append({
                 "speciesCode": species_code,
+                "species_code": species_code,
                 "commonName": common_name,
-                "scientificName": scientific_name,
-                "score": round(score, 3),
                 "common_name": common_name,
+                "scientificName": scientific_name,
                 "scientific_name": scientific_name,
+                "species": common_name,
+                "name": common_name,
+                "label": common_name,
+                "score": round(score, 3),
                 "confidence": round(score, 3),
-                "name": common_name
+                "probability": round(score, 3)
             })
 
         formatted_results = sorted(formatted_results, key=lambda x: x['score'], reverse=True)[:5]
@@ -171,16 +175,23 @@ def analyze_audio_request():
         print(f"🎯 [{req_id}] Classification complete. Identified {len(formatted_results)} species.", flush=True)
 
         response.headers['Access-Control-Allow-Origin'] = '*' 
+        
+        # Universal Envelope for all client schemas
         return {
             "results": formatted_results,
             "predictions": formatted_results,
-            "success": True
+            "birds": formatted_results,
+            "data": formatted_results,
+            "detections": formatted_results,
+            "success": True,
+            "status": "success",
+            "count": len(formatted_results)
         }
 
     except Exception as e:
         print(f"❌ [{req_id}] Processing error: {str(e)}", flush=True)
         response.headers['Access-Control-Allow-Origin'] = '*'
-        return {"error": str(e)}
+        return {"error": str(e), "success": False}
 
     finally:
         if os.path.exists(raw_path): os.remove(raw_path)
