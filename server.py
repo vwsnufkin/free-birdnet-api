@@ -13,8 +13,6 @@ import onnxruntime as ort
 from bottle import route, run, request, response
 
 IS_BUSY = False
-
-# Direct path to model downloaded in Dockerfile
 LOCAL_MODEL = '/app/models/BirdNET_GLOBAL_6K_V2.4_Model_FP32.onnx'
 
 def locate_onnx_model():
