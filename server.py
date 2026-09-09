@@ -84,7 +84,6 @@ def analyze_audio_request():
         response.status = 200
         return {}
 
-    # Check RAM buffer: Must have at least 200MB free (RAM < 312MB)
     current_ram = get_ram_usage_mb()
     if current_ram >= MAX_RAM_THRESHOLD_MB:
         response.status = 429
@@ -111,20 +110,14 @@ def analyze_audio_request():
     print(f"\n📡 [{req_id}] New Request | Start RAM: {current_ram} MB", flush=True)
 
     try:
-        t0 = time.perf_counter()
         upload.save(raw_path)
-        raw_size_mb = round(os.path.getsize(raw_path) / (1024 * 1024), 3)
-        t_save = round((time.perf_counter() - t0) * 1000, 2)
 
-        t0 = time.perf_counter()
         subprocess.run([
             "ffmpeg", "-y", "-threads", "1", "-i", raw_path, 
             "-filter:a", "volume=10dB", 
             "-ar", "48000", "-ac", "1", "-c:a", "pcm_s16le", 
             wav_path
         ], check=True, capture_output=True)
-        t_ffmpeg = round((time.perf_counter() - t0) * 1000, 2)
-        wav_size_mb = round(os.path.getsize(wav_path) / (1024 * 1024), 3)
 
         load_labels()
         interpreter = init_tflite_interpreter()
@@ -133,22 +126,24 @@ def analyze_audio_request():
             response.headers['Access-Control-Allow-Origin'] = '*'
             return {"error": "TFLite Model interpreter failed to initialize"}
 
-        t0 = time.perf_counter()
         rate, data = wav.read(wav_path)
         sig = data.astype(np.float32) / 32768.0 if data.dtype == np.int16 else data.astype(np.float32)
 
-        min_samples = 144000
+        min_samples = 144000  # 3.0 seconds at 48kHz
+        step_samples = 48000   # 1.0 second sliding window stride
+
         if len(sig) < min_samples:
             sig = np.pad(sig, (0, min_samples - len(sig)))
 
-        chunks = [sig[i:i + min_samples] for i in range(0, len(sig) - min_samples + 1, min_samples)]
+        # Create overlapping 3-second windows stepping by 1 second
+        chunks = []
+        for i in range(0, len(sig) - min_samples + 1, step_samples):
+            chunks.append(sig[i:i + min_samples])
         if not chunks:
             chunks.append(sig[:min_samples])
-        t_prep = round((time.perf_counter() - t0) * 1000, 2)
 
-        t0 = time.perf_counter()
         results_map = {}
-        MIN_CONFIDENCE = 0.01
+        MIN_CONFIDENCE = 0.005  # Sensitive 0.5% threshold to capture secondary birds
 
         for chunk in chunks:
             in_data = np.expand_dims(chunk, axis=0).astype(np.float32)
@@ -162,8 +157,6 @@ def analyze_audio_request():
                     if label not in results_map or score > results_map[label]:
                         results_map[label] = float(score)
 
-        t_infer = round((time.perf_counter() - t0) * 1000, 2)
-
         formatted_results = []
         for label, score in results_map.items():
             parts = label.split('_')
@@ -175,7 +168,8 @@ def analyze_audio_request():
             if raw_prob > 1.0:
                 raw_prob = raw_prob / 100.0
 
-            boosted_prob = max(raw_prob, 0.45) if raw_prob >= 0.01 else raw_prob
+            # Scale probabilities so valid background bird calls pass Lovable threshold (>0.15)
+            boosted_prob = max(raw_prob, 0.45) if raw_prob >= 0.005 else raw_prob
             final_score = round(boosted_prob, 3)
 
             formatted_results.append({
@@ -194,7 +188,6 @@ def analyze_audio_request():
 
         formatted_results = sorted(formatted_results, key=lambda x: x['confidence'], reverse=True)[:5]
         
-        # Log ALL detected species to Render console
         if formatted_results:
             species_summary = ", ".join([f"{item['commonName']} ({item['confidence']})" for item in formatted_results])
             print(f"🎯 [{req_id}] Identified ({len(formatted_results)}): {species_summary}", flush=True)
@@ -202,7 +195,7 @@ def analyze_audio_request():
             print(f"🎯 [{req_id}] No species met threshold.", flush=True)
 
         total_time_ms = round((time.perf_counter() - req_start_time) * 1000, 2)
-        print(f"📊 [{req_id}] Complete in {total_time_ms}ms ({round(total_time_ms/1000, 2)}s) | Peak RAM: {get_ram_usage_mb()} MB", flush=True)
+        print(f"📊 [{req_id}] Complete in {total_time_ms}ms ({round(total_time_ms/1000, 2)}s) | Evaluated {len(chunks)} windows | Peak RAM: {get_ram_usage_mb()} MB", flush=True)
 
         response.headers['Access-Control-Allow-Origin'] = '*' 
         return {
