@@ -7,15 +7,17 @@ import gc
 import subprocess
 import numpy as np
 import scipy.io.wavfile as wav
-import onnxruntime as ort
+import tflite_runtime.interpreter as tflite
 from bottle import route, run, request, response
 
 IS_BUSY = False
 
-MODEL_PATH = '/app/models/model.onnx'
+MODEL_PATH = '/app/models/model.tflite'
 LABELS_PATH = '/app/models/labels.txt'
 
-ORT_SESSION = None
+INTERPRETER = None
+INPUT_DETAILS = None
+OUTPUT_DETAILS = None
 SPECIES_LABELS = []
 
 def load_labels():
@@ -28,18 +30,18 @@ def load_labels():
         except Exception as e:
             print(f"⚠️ Error reading labels: {e}", flush=True)
 
-def init_onnx_session():
-    global ORT_SESSION
-    if ORT_SESSION is None and os.path.exists(MODEL_PATH):
+def init_tflite_interpreter():
+    global INTERPRETER, INPUT_DETAILS, OUTPUT_DETAILS
+    if INTERPRETER is None and os.path.exists(MODEL_PATH):
         try:
-            opts = ort.SessionOptions()
-            opts.intra_op_num_threads = 1
-            opts.inter_op_num_threads = 1
-            ORT_SESSION = ort.InferenceSession(MODEL_PATH, opts, providers=['CPUExecutionProvider'])
-            print(f"🟢 Direct ONNX Session initialized cleanly from {MODEL_PATH}", flush=True)
+            INTERPRETER = tflite.Interpreter(model_path=MODEL_PATH, num_threads=1)
+            INTERPRETER.allocate_tensors()
+            INPUT_DETAILS = INTERPRETER.get_input_details()
+            OUTPUT_DETAILS = INTERPRETER.get_output_details()
+            print(f"🟢 Direct TFLite Interpreter initialized cleanly from {MODEL_PATH}", flush=True)
         except Exception as e:
-            print(f"❌ ONNX Session Init Error: {e}", flush=True)
-    return ORT_SESSION
+            print(f"❌ TFLite Init Error: {e}", flush=True)
+    return INTERPRETER
 
 @route('/ping', method=['GET', 'OPTIONS'])
 def ping_server():
@@ -48,7 +50,7 @@ def ping_server():
     response.headers['Access-Control-Allow-Headers'] = 'Origin, Accept, Content-Type, X-Requested-With'
     if request.method == 'OPTIONS':
         return {}
-    return {"status": "awake", "busy": IS_BUSY, "model_ready": ORT_SESSION is not None}
+    return {"status": "awake", "busy": IS_BUSY, "model_ready": INTERPRETER is not None}
 
 @route('/status', method=['GET', 'OPTIONS'])
 def check_status():
@@ -57,7 +59,7 @@ def check_status():
     response.headers['Access-Control-Allow-Headers'] = 'Origin, Accept, Content-Type, X-Requested-With'
     if request.method == 'OPTIONS':
         return {}
-    return {"status": "awake", "busy": IS_BUSY, "model_ready": ORT_SESSION is not None}
+    return {"status": "awake", "busy": IS_BUSY, "model_ready": INTERPRETER is not None}
 
 @route('/analyze', method=['OPTIONS', 'POST'])
 def analyze_audio_request():
@@ -95,11 +97,11 @@ def analyze_audio_request():
         ], check=True, capture_output=True)
 
         load_labels()
-        session = init_onnx_session()
+        interpreter = init_tflite_interpreter()
 
-        if not session:
+        if not interpreter:
             response.headers['Access-Control-Allow-Origin'] = '*'
-            return {"error": "ONNX Model session failed to initialize"}
+            return {"error": "TFLite Model interpreter failed to initialize"}
 
         rate, data = wav.read(wav_path)
         sig = data.astype(np.float32) / 32768.0 if data.dtype == np.int16 else data.astype(np.float32)
@@ -112,13 +114,13 @@ def analyze_audio_request():
         if not chunks:
             chunks.append(sig[:min_samples])
 
-        input_name = session.get_inputs()[0].name
         results_map = {}
 
         for chunk in chunks:
             in_data = np.expand_dims(chunk, axis=0).astype(np.float32)
-            outputs = session.run(None, {input_name: in_data})
-            scores = outputs[0][0]
+            interpreter.set_tensor(INPUT_DETAILS[0]['index'], in_data)
+            interpreter.invoke()
+            scores = interpreter.get_tensor(OUTPUT_DETAILS[0]['index'])[0]
             
             for idx, score in enumerate(scores):
                 if score >= 0.03:
@@ -151,7 +153,7 @@ def analyze_audio_request():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
-    print(f"🟢 Direct ONNX BirdNET server booting on port {port}...", flush=True)
+    print(f"🟢 Direct TFLite BirdNET server booting on port {port}...", flush=True)
     load_labels()
-    init_onnx_session()
+    init_tflite_interpreter()
     run(host='0.0.0.0', port=port)
