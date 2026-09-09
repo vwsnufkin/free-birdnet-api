@@ -12,18 +12,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Download official BirdNET V2.4 FP32 ONNX model & labels from HuggingFace CDN
+# Download TFLite model weights and labels directly from your vwsnufkin/free-birdnet-api Release
 RUN mkdir -p /app/models && \
-    curl -fL "https://huggingface.co/mcguirep/birdnet-analyzer/resolve/main/BirdNET_GLOBAL_6K_V2.4_Model_FP32.onnx" -o /app/models/model.onnx && \
-    curl -fL "https://huggingface.co/mcguirep/birdnet-analyzer/resolve/main/BirdNET_GLOBAL_6K_V2.4_Labels.txt" -o /app/models/labels.txt
+    curl -fL "https://github.com/vwsnufkin/free-birdnet-api/releases/download/v1.0.0/model.tflite" -o /app/models/model.tflite && \
+    curl -fL "https://github.com/vwsnufkin/free-birdnet-api/releases/download/v1.0.0/labels.txt" -o /app/models/labels.txt
 
-# Verify the ONNX model binary downloaded successfully and is larger than 100MB
-RUN test -s /app/models/model.onnx && test $(wc -c < /app/models/model.onnx) -gt 100000000
+# Sanity check to confirm model downloaded successfully (>30MB)
+RUN test -s /app/models/model.tflite && test $(wc -c < /app/models/model.tflite) -gt 30000000
 
 COPY . .
 
 RUN pip install --no-cache-dir --upgrade pip
-RUN pip install --no-cache-dir bottle onnxruntime "numpy<2.0.0" scipy
+RUN pip install --no-cache-dir bottle "numpy<2.0.0" scipy tflite-runtime
 
 EXPOSE 10000
 CMD ["python", "server.py"]
