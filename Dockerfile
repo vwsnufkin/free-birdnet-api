@@ -4,7 +4,6 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV OMP_NUM_THREADS=1
 
-# Install git, git-lfs, ffmpeg, and ca-certificates
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     git-lfs \
@@ -14,9 +13,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Enable Git LFS and clone the repository with binary LFS files
+# Clone repo and explicitly run git lfs pull to download binary LFS files
 RUN git lfs install && \
-    git clone --depth 1 https://github.com/birdnet-team/BirdNET-Analyzer.git /tmp/birdnet-repo && \
+    git clone https://github.com/birdnet-team/BirdNET-Analyzer.git /tmp/birdnet-repo && \
+    cd /tmp/birdnet-repo && git lfs pull && cd /app && \
     mkdir -p /app/models && \
     find /tmp/birdnet-repo -name "*.onnx" -exec cp {} /app/models/model.onnx \; && \
     find /tmp/birdnet-repo -name "*label*.txt" -exec cp {} /app/models/labels.txt \; && \
