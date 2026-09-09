@@ -7,7 +7,6 @@ import glob
 import uuid
 import gc
 import subprocess
-import importlib.resources
 import numpy as np
 import scipy.io.wavfile as wav
 import onnxruntime as ort
@@ -15,19 +14,41 @@ from bottle import route, run, request, response
 
 IS_BUSY = False
 
-def find_package_file(filename_pattern):
-    """Finds a model asset directly inside the installed birdnet_analyzer package."""
-    # Look inside birdnet_analyzer site-packages subdirectories
-    possible_paths = glob.glob(f'/usr/local/lib/python3.11/site-packages/birdnet_analyzer/**/{filename_pattern}', recursive=True) + \
-                     glob.glob(f'/app/**/{filename_pattern}', recursive=True)
-    for p in possible_paths:
-        if os.path.exists(p) and os.path.getsize(p) > 0:
-            return p
-    return None
+def find_onnx_and_labels():
+    """Finds the ONNX model file and labels.txt across cache and site-packages locations."""
+    search_paths = [
+        '/root/.cache/birdnet*/**/*.onnx',
+        '/root/.cache/**/*.onnx',
+        '/tmp/**/*.onnx',
+        '/usr/local/lib/python3.11/site-packages/**/*.onnx',
+        '/app/**/*.onnx'
+    ]
+    model_path = None
+    for pattern in search_paths:
+        matches = glob.glob(pattern, recursive=True)
+        for m in matches:
+            if os.path.getsize(m) > 50000000:  # Must be larger than 50MB (actual model is ~224MB)
+                model_path = m
+                break
+        if model_path:
+            break
 
-MODEL_PATH = find_package_file('*FP32*.onnx') or find_package_file('*.onnx')
-LABELS_PATH = find_package_file('*label*.txt') or find_package_file('labels.txt')
+    label_search_paths = [
+        '/root/.cache/birdnet*/**/labels.txt',
+        '/root/.cache/**/labels.txt',
+        '/usr/local/lib/python3.11/site-packages/**/labels.txt',
+        '/app/**/labels.txt'
+    ]
+    labels_path = None
+    for pattern in label_search_paths:
+        matches = glob.glob(pattern, recursive=True)
+        if matches:
+            labels_path = matches[0]
+            break
 
+    return model_path, labels_path
+
+MODEL_PATH, LABELS_PATH = find_onnx_and_labels()
 ORT_SESSION = None
 SPECIES_LABELS = []
 
@@ -35,7 +56,7 @@ def load_labels():
     global SPECIES_LABELS, LABELS_PATH
     if not SPECIES_LABELS:
         if not LABELS_PATH:
-            LABELS_PATH = find_package_file('*label*.txt') or find_package_file('labels.txt')
+            _, LABELS_PATH = find_onnx_and_labels()
         if LABELS_PATH and os.path.exists(LABELS_PATH):
             try:
                 with open(LABELS_PATH, 'r', encoding='utf-8') as f:
@@ -47,17 +68,17 @@ def load_labels():
 def get_onnx_session():
     global ORT_SESSION, MODEL_PATH
     if ORT_SESSION is None:
-        if not MODEL_PATH or os.path.getsize(MODEL_PATH) < 100000000:
-            MODEL_PATH = find_package_file('*FP32*.onnx') or find_package_file('*.onnx')
-        
+        if not MODEL_PATH or not os.path.exists(MODEL_PATH):
+            MODEL_PATH, _ = find_onnx_and_labels()
+            
         if MODEL_PATH and os.path.exists(MODEL_PATH):
             opts = ort.SessionOptions()
             opts.intra_op_num_threads = 1
             opts.inter_op_num_threads = 1
             ORT_SESSION = ort.InferenceSession(MODEL_PATH, opts, providers=['CPUExecutionProvider'])
-            print(f"✅ ONNX model loaded cleanly from package: {MODEL_PATH}", flush=True)
+            print(f"✅ ONNX model loaded cleanly from: {MODEL_PATH}", flush=True)
         else:
-            print(f"❌ Model file invalid or missing: {MODEL_PATH}", flush=True)
+            print("❌ ONNX Model file not found in cache or system paths!", flush=True)
     return ORT_SESSION
 
 @route('/ping', method=['GET', 'OPTIONS'])
