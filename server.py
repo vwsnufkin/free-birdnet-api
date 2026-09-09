@@ -97,6 +97,7 @@ def analyze_audio_request():
         upload.save(raw_path)
         print(f"✅ [{req_id}] Audio file saved. Converting format...", flush=True)
 
+        # Fast conversion pass
         subprocess.run([
             "ffmpeg", "-y", "-i", raw_path, 
             "-filter:a", "volume=10dB", 
@@ -126,7 +127,7 @@ def analyze_audio_request():
 
         results_map = {}
 
-        # Set to 1% threshold (0.01) for detailed testing
+        # 1% threshold
         MIN_CONFIDENCE = 0.01
 
         for chunk in chunks:
@@ -149,13 +150,10 @@ def analyze_audio_request():
             scientific_name = parts[2] if len(parts) > 2 else common_name
 
             formatted_results.append({
-                # Standard API Format
                 "speciesCode": species_code,
                 "commonName": common_name,
                 "scientificName": scientific_name,
                 "score": round(score, 3),
-                
-                # Compatibility Fallbacks for various Frontend Schemas
                 "common_name": common_name,
                 "scientific_name": scientific_name,
                 "confidence": round(score, 3),
@@ -164,7 +162,6 @@ def analyze_audio_request():
 
         formatted_results = sorted(formatted_results, key=lambda x: x['score'], reverse=True)[:5]
         
-        # Log top prediction to Render console for debugging
         if formatted_results:
             top = formatted_results[0]
             print(f"🎯 [{req_id}] Top prediction: {top['commonName']} ({top['score']})", flush=True)
