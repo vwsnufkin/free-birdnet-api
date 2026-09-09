@@ -1,12 +1,10 @@
 import os
-# Force ONNX mode and cache directory
 os.environ['BIRDNET_USE_ONNX'] = '1'
 os.environ['BIRDNET_MODEL_PATH'] = '/app/model_cache'
 os.environ['XDG_CACHE_HOME'] = '/app/model_cache'
 os.environ['TORCH_HOME'] = '/app/model_cache'
 os.environ['HF_HOME'] = '/app/model_cache'
 
-# Strict thread limits
 os.environ['OMP_NUM_THREADS'] = '1'
 os.environ['TF_NUM_INTRAOP_THREADS'] = '1'
 os.environ['TF_NUM_INTEROP_THREADS'] = '1'
@@ -30,8 +28,7 @@ def run_onnx_birdnet(wav_path, out_dir, lat, lon):
         "--rtype", "csv",
         "--lat", str(lat),
         "--lon", str(lon),
-        "--min_conf", "0.05",
-        "--use_onnx",
+        "--min_conf", "0.01",
         "-t", "1",
         "-b", "1",
         wav_path
@@ -59,7 +56,7 @@ def check_status():
     response.headers['Access-Control-Allow-Headers'] = 'Origin, Accept, Content-Type, X-Requested-With'
     if request.method == 'OPTIONS':
         return {}
-    return {"busy": IS_BUSY}
+    return {"status": "awake", "busy": IS_BUSY}
 
 @route('/analyze', method=['OPTIONS', 'POST'])
 def analyze_audio_request():
@@ -102,7 +99,7 @@ def analyze_audio_request():
         print(f"✅ [{req_id[:8]}] Audio file saved. Converting format...", flush=True)
 
         try:
-            subprocess.run(["ffmpeg", "-y", "-i", raw_path, "-filter:a", "volume=5dB", "-ar", "48000", "-ac", "1", wav_path], check=True, capture_output=True)
+            subprocess.run(["ffmpeg", "-y", "-i", raw_path, "-filter:a", "volume=10dB", "-ar", "48000", "-ac", "1", wav_path], check=True, capture_output=True)
             print(f"✅ [{req_id[:8]}] Audio successfully converted.", flush=True)
         except subprocess.CalledProcessError as e:
             response.headers['Access-Control-Allow-Origin'] = '*'
@@ -111,23 +108,40 @@ def analyze_audio_request():
         print(f"🚀 [{req_id[:8]}] Running ONNX BirdNET engine...", flush=True)
         os.makedirs(out_dir, exist_ok=True)
 
-        # Run ONNX inference
         proc = run_onnx_birdnet(wav_path, out_dir, user_lat, user_lon)
         
+        if proc.stdout:
+            print(f"🔍 [Engine Log]: {proc.stdout.strip()}", flush=True)
+        if proc.stderr:
+            print(f"⚠️ [Engine Err]: {proc.stderr.strip()}", flush=True)
+
         print(f"✅ [{req_id[:8]}] AI Engine finished processing cleanly.", flush=True)
 
         results = []
         if os.path.exists(out_dir):
-            csv_files = glob.glob(f"{out_dir}/*.csv")
+            csv_files = glob.glob(f"{out_dir}/*.csv") + glob.glob(f"{out_dir}/*/*.csv")
+            print(f"📁 [{req_id[:8]}] CSV files found on disk: {csv_files}", flush=True)
+            
             if csv_files:
                 with open(csv_files[0], 'r') as f:
                     reader = csv.DictReader(f)
                     for row in reader:
-                        results.append({
-                            "speciesCode": row.get('Scientific name', ''),
-                            "commonName": row.get('Common name', ''),
-                            "score": float(row.get('Confidence', 0))
-                        })
+                        # Case-insensitive column extraction
+                        scientific = row.get('Scientific name') or row.get('Scientific Name') or row.get('Scientific_Name') or ''
+                        common = row.get('Common name') or row.get('Common Name') or row.get('Common_Name') or ''
+                        conf = row.get('Confidence') or row.get('confidence') or 0.0
+                        
+                        try:
+                            score = float(conf)
+                        except ValueError:
+                            score = 0.0
+
+                        if scientific or common:
+                            results.append({
+                                "speciesCode": scientific,
+                                "commonName": common,
+                                "score": score
+                            })
                 
                 results = sorted(results, key=lambda x: x['score'], reverse=True)[:5]
                 print(f"🎉 [{req_id[:8]}] Success! Returning top {len(results)} local matches.", flush=True)
