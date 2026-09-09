@@ -194,9 +194,12 @@ def analyze_audio_request():
 
         formatted_results = sorted(formatted_results, key=lambda x: x['confidence'], reverse=True)[:5]
         
+        # Log ALL detected species to Render console
         if formatted_results:
-            top = formatted_results[0]
-            print(f"🎯 [{req_id}] Top species: {top['commonName']} ({top['confidence']})", flush=True)
+            species_summary = ", ".join([f"{item['commonName']} ({item['confidence']})" for item in formatted_results])
+            print(f"🎯 [{req_id}] Identified ({len(formatted_results)}): {species_summary}", flush=True)
+        else:
+            print(f"🎯 [{req_id}] No species met threshold.", flush=True)
 
         total_time_ms = round((time.perf_counter() - req_start_time) * 1000, 2)
         print(f"📊 [{req_id}] Complete in {total_time_ms}ms ({round(total_time_ms/1000, 2)}s) | Peak RAM: {get_ram_usage_mb()} MB", flush=True)
