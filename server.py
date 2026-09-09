@@ -1,5 +1,6 @@
 import os
-# Enforce strict single-thread execution to preserve RAM
+# Set permanent model path before importing birdnet_analyzer
+os.environ['BIRDNET_MODEL_PATH'] = '/app/birdnet_models'
 os.environ['OMP_NUM_THREADS'] = '1'
 os.environ['TF_NUM_INTRAOP_THREADS'] = '1'
 os.environ['TF_NUM_INTEROP_THREADS'] = '1'
@@ -81,6 +82,7 @@ def analyze_audio_request():
         
         old_argv = sys.argv
         
+        # Explicit arguments targeting local model path
         sys.argv = [
             "birdnet_analyzer.analyze",
             "-o", out_dir,
