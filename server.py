@@ -1,5 +1,5 @@
 import os
-# Force strict single-thread execution
+# Force strict single-thread execution to save RAM
 os.environ['OMP_NUM_THREADS'] = '1'
 os.environ['TF_NUM_INTRAOP_THREADS'] = '1'
 os.environ['TF_NUM_INTEROP_THREADS'] = '1'
@@ -14,6 +14,7 @@ import gc
 import runpy
 from bottle import route, run, request, response
 
+# Global lock state to signal server status to Lovable
 IS_BUSY = False
 
 @route('/ping', method=['GET', 'OPTIONS'])
@@ -45,6 +46,7 @@ def analyze_audio_request():
         response.status = 200
         return {}
 
+    # Lock out concurrent requests to protect RAM
     if IS_BUSY:
         response.status = 429
         return {"error": "Server is currently busy analyzing audio. Please try again in a few seconds."}
@@ -58,6 +60,7 @@ def analyze_audio_request():
 
     user_lat = request.forms.get('lat', '-1')
     user_lon = request.forms.get('lon', '-1')
+    print(f"🌍 GPS Location received: Lat {user_lat}, Lon {user_lon}", flush=True)
 
     req_id = str(uuid.uuid4())
     raw_path = f'/tmp/raw_{req_id}'
@@ -70,18 +73,18 @@ def analyze_audio_request():
         print(f"✅ [{req_id[:8]}] Audio file saved. Converting format...", flush=True)
 
         try:
+            # Convert input file to 48kHz WAV
             subprocess.run(["ffmpeg", "-y", "-i", raw_path, "-filter:a", "volume=5dB", "-ar", "48000", wav_path], check=True, capture_output=True)
             print(f"✅ [{req_id[:8]}] Audio successfully converted.", flush=True)
         except subprocess.CalledProcessError as e:
             response.headers['Access-Control-Allow-Origin'] = '*'
             return {"error": f"Audio Conversion Failed: {e.stderr.decode()}"}
 
-        print(f"🚀 [{req_id[:8]}] Launching Cornell AI engine in-process...", flush=True)
+        print(f"🚀 [{req_id[:8]}] Launching Cornell AI engine with GPS filtering...", flush=True)
         
-        # Save old sys.argv to restore later
         old_argv = sys.argv
         
-        # Pass CLI parameters directly inside the current process
+        # Configure CLI arguments within active process using pre-cached models
         sys.argv = [
             "birdnet_analyzer.analyze",
             "-o", out_dir,
@@ -94,11 +97,10 @@ def analyze_audio_request():
         ]
 
         try:
-            # Execute BirdNET CLI in the current Python memory space (0 extra RAM overhead!)
+            # Run BirdNET in-process using pre-cached model files
             runpy.run_module('birdnet_analyzer.analyze', run_name='__main__')
             print(f"✅ [{req_id[:8]}] AI Engine finished processing cleanly.", flush=True)
         except SystemExit:
-            # Catch standard sys.exit() calls from CLI parsers
             pass
         except Exception as e:
             print(f"❌ Execution error: {e}", flush=True)
@@ -118,8 +120,9 @@ def analyze_audio_request():
                             "score": float(row.get('Confidence', 0))
                         })
                 
+                # Return top 5 matches sorted by confidence score
                 results = sorted(results, key=lambda x: x['score'], reverse=True)[:5]
-                print(f"🎉 [{req_id[:8]}] Success! Returning top {len(results)} matches.", flush=True)
+                print(f"🎉 [{req_id[:8]}] Success! Returning top {len(results)} local matches.", flush=True)
                 response.headers['Access-Control-Allow-Origin'] = '*' 
                 return {"results": results}
             
@@ -128,6 +131,7 @@ def analyze_audio_request():
         return {"results": []}
 
     finally:
+        # Clean temporary files and unlock server
         if os.path.exists(raw_path): os.remove(raw_path)
         if os.path.exists(wav_path): os.remove(wav_path)
         if os.path.exists(out_dir): shutil.rmtree(out_dir)
@@ -136,5 +140,5 @@ def analyze_audio_request():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
-    print(f"🟢 Zero-overhead in-process server booting on port {port}...", flush=True)
+    print(f"🟢 Location-aware pre-loaded server booting on port {port}...", flush=True)
     run(host='0.0.0.0', port=port)
