@@ -12,12 +12,10 @@ import scipy.io.wavfile as wav
 import onnxruntime as ort
 from bottle import route, run, request, response
 
-# Import species list function directly
-from birdnet_analyzer.species import get_species_list
-
 IS_BUSY = False
 
 def locate_onnx_model():
+    """Locate the ONNX model file inside site-packages or local paths."""
     possible_paths = glob.glob('/usr/local/lib/python3.11/site-packages/birdnet_analyzer/model/*.onnx') + \
                      glob.glob('/usr/local/lib/python3.11/site-packages/birdnet_analyzer/**/*.onnx', recursive=True) + \
                      glob.glob('/app/**/*.onnx', recursive=True)
@@ -30,12 +28,15 @@ ORT_SESSION = None
 
 def get_onnx_session():
     global ORT_SESSION, MODEL_PATH
-    if ORT_SESSION is None and MODEL_PATH and os.path.exists(MODEL_PATH):
-        opts = ort.SessionOptions()
-        opts.intra_op_num_threads = 1
-        opts.inter_op_num_threads = 1
-        ORT_SESSION = ort.InferenceSession(MODEL_PATH, opts, providers=['CPUExecutionProvider'])
-        print(f"✅ ONNX model loaded into memory from {MODEL_PATH}", flush=True)
+    if ORT_SESSION is None:
+        if not MODEL_PATH:
+            MODEL_PATH = locate_onnx_model()
+        if MODEL_PATH and os.path.exists(MODEL_PATH):
+            opts = ort.SessionOptions()
+            opts.intra_op_num_threads = 1
+            opts.inter_op_num_threads = 1
+            ORT_SESSION = ort.InferenceSession(MODEL_PATH, opts, providers=['CPUExecutionProvider'])
+            print(f"✅ ONNX model loaded into memory from {MODEL_PATH}", flush=True)
     return ORT_SESSION
 
 @route('/ping', method=['GET', 'OPTIONS'])
@@ -107,17 +108,9 @@ def analyze_audio_request():
             response.headers['Access-Control-Allow-Origin'] = '*'
             return {"error": f"Audio Conversion Failed: {e.stderr.decode()}"}
 
-        print(f"🚀 [{req_id[:8]}] Filtering species list by GPS...", flush=True)
-        
-        # Get localized species filter list using direct function call
-        try:
-            local_species = get_species_list(user_lat, user_lon, 0.05)
-        except Exception:
-            local_species = []
+        print(f"🚀 [{req_id[:8]}] Running ONNX inference...", flush=True)
 
-        print(f"🌍 Found {len(local_species)} species relevant to coordinates ({user_lat}, {user_lon})", flush=True)
-
-        # Read converted audio WAV signal
+        # Read converted 48kHz WAV
         rate, data = wav.read(wav_path)
         
         if data.dtype == np.int16:
@@ -151,25 +144,21 @@ def analyze_audio_request():
                 
                 for idx, score in enumerate(scores):
                     if score >= 0.03:
-                        sp_name = local_species[idx] if idx < len(local_species) else f"Species_{idx}"
+                        sp_name = f"Species_{idx}"
                         if sp_name not in results_map or score > results_map[sp_name]:
                             results_map[sp_name] = float(score)
 
         formatted_results = []
         for sp, score in results_map.items():
-            parts = sp.split('_')
-            sci_name = parts[0] if len(parts) > 0 else sp
-            com_name = parts[1] if len(parts) > 1 else sp
-            
             formatted_results.append({
-                "speciesCode": sci_name,
-                "commonName": com_name,
+                "speciesCode": sp,
+                "commonName": sp,
                 "score": round(score, 3)
             })
 
         formatted_results = sorted(formatted_results, key=lambda x: x['score'], reverse=True)[:5]
         
-        print(f"🎉 [{req_id[:8]}] Success! Returning top {len(formatted_results)} local matches.", flush=True)
+        print(f"🎉 [{req_id[:8]}] Success! Returning top {len(formatted_results)} matches.", flush=True)
         response.headers['Access-Control-Allow-Origin'] = '*' 
         return {"results": formatted_results}
 
@@ -186,5 +175,5 @@ def analyze_audio_request():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
-    print(f"🟢 Pure ONNX direct inference server booting on port {port}...", flush=True)
+    print(f"🟢 Pure ONNX light server booting on port {port}...", flush=True)
     run(host='0.0.0.0', port=port)
