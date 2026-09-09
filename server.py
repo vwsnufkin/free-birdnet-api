@@ -12,32 +12,78 @@ import scipy.io.wavfile as wav
 import onnxruntime as ort
 from bottle import route, run, request, response
 
+# Import birdnet_analyzer internals to query its model and label paths
+import birdnet_analyzer.config as cfg
+import birdnet_analyzer.model as bmodel
+import birdnet_analyzer.labels as blabels
+
 IS_BUSY = False
 
-MODEL_PATH = '/app/models/model.onnx'
-LABELS_PATH = '/app/models/labels.txt'
+def resolve_model_and_labels():
+    """Finds the ONNX model and species labels path via birdnet_analyzer configuration or disk search."""
+    model_path = None
+    labels_path = None
 
+    # Check birdnet_analyzer's default paths first
+    try:
+        if hasattr(cfg, 'MODEL_PATH') and os.path.exists(cfg.MODEL_PATH):
+            model_path = cfg.MODEL_PATH
+        if hasattr(cfg, 'LABELS_FILE') and os.path.exists(cfg.LABELS_FILE):
+            labels_path = cfg.LABELS_FILE
+    except Exception:
+        pass
+
+    # Recursive fallback search on disk
+    if not model_path or not os.path.exists(model_path):
+        candidates = glob.glob('/root/.cache/**/*.onnx', recursive=True) + \
+                     glob.glob('/usr/local/lib/python3.11/site-packages/**/*.onnx', recursive=True) + \
+                     glob.glob('/app/**/*.onnx', recursive=True)
+        for c in candidates:
+            if os.path.getsize(c) > 50000000:  # > 50MB binary file
+                model_path = c
+                break
+
+    if not labels_path or not os.path.exists(labels_path):
+        candidates = glob.glob('/root/.cache/**/*label*.txt', recursive=True) + \
+                     glob.glob('/usr/local/lib/python3.11/site-packages/**/*label*.txt', recursive=True) + \
+                     glob.glob('/app/**/*label*.txt', recursive=True)
+        if candidates:
+            labels_path = candidates[0]
+
+    return model_path, labels_path
+
+MODEL_PATH, LABELS_PATH = resolve_model_and_labels()
 ORT_SESSION = None
 SPECIES_LABELS = []
 
 def load_labels():
-    global SPECIES_LABELS
-    if not SPECIES_LABELS and os.path.exists(LABELS_PATH):
-        try:
-            with open(LABELS_PATH, 'r', encoding='utf-8') as f:
-                SPECIES_LABELS = [line.strip() for line in f if line.strip()]
-            print(f"✅ Loaded {len(SPECIES_LABELS)} species labels.", flush=True)
-        except Exception as e:
-            print(f"⚠️ Error reading labels file: {e}", flush=True)
+    global SPECIES_LABELS, LABELS_PATH
+    if not SPECIES_LABELS:
+        if not LABELS_PATH or not os.path.exists(LABELS_PATH):
+            _, LABELS_PATH = resolve_model_and_labels()
+        
+        if LABELS_PATH and os.path.exists(LABELS_PATH):
+            try:
+                with open(LABELS_PATH, 'r', encoding='utf-8') as f:
+                    SPECIES_LABELS = [line.strip() for line in f if line.strip()]
+                print(f"✅ Loaded {len(SPECIES_LABELS)} species labels from {LABELS_PATH}", flush=True)
+            except Exception as e:
+                print(f"⚠️ Error reading species labels: {e}", flush=True)
 
 def init_onnx_session():
-    global ORT_SESSION
-    if ORT_SESSION is None and os.path.exists(MODEL_PATH):
-        opts = ort.SessionOptions()
-        opts.intra_op_num_threads = 1
-        opts.inter_op_num_threads = 1
-        ORT_SESSION = ort.InferenceSession(MODEL_PATH, opts, providers=['CPUExecutionProvider'])
-        print(f"🟢 BirdNET V2.4 ONNX Session initialized cleanly from {MODEL_PATH}", flush=True)
+    global ORT_SESSION, MODEL_PATH
+    if ORT_SESSION is None:
+        if not MODEL_PATH or not os.path.exists(MODEL_PATH):
+            MODEL_PATH, _ = resolve_model_and_labels()
+            
+        if MODEL_PATH and os.path.exists(MODEL_PATH):
+            opts = ort.SessionOptions()
+            opts.intra_op_num_threads = 1
+            opts.inter_op_num_threads = 1
+            ORT_SESSION = ort.InferenceSession(MODEL_PATH, opts, providers=['CPUExecutionProvider'])
+            print(f"🟢 ONNX Session initialized from {MODEL_PATH}", flush=True)
+        else:
+            print(f"❌ Could not resolve valid ONNX model file path on disk!", flush=True)
     return ORT_SESSION
 
 @route('/ping', method=['GET', 'OPTIONS'])
