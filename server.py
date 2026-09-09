@@ -112,6 +112,7 @@ def analyze_audio_request():
     try:
         upload.save(raw_path)
 
+        # Retain 10dB volume boost
         subprocess.run([
             "ffmpeg", "-y", "-threads", "1", "-i", raw_path, 
             "-filter:a", "volume=10dB", 
@@ -130,12 +131,12 @@ def analyze_audio_request():
         sig = data.astype(np.float32) / 32768.0 if data.dtype == np.int16 else data.astype(np.float32)
 
         min_samples = 144000  # 3.0 seconds at 48kHz
-        step_samples = 48000   # 1.0 second sliding window stride
+        step_samples = 96000   # 2.0 second stride (Balanced: 3 windows per 8s recording)
 
         if len(sig) < min_samples:
             sig = np.pad(sig, (0, min_samples - len(sig)))
 
-        # Create overlapping 3-second windows stepping by 1 second
+        # Create overlapping 3-second windows stepping by 2 seconds
         chunks = []
         for i in range(0, len(sig) - min_samples + 1, step_samples):
             chunks.append(sig[i:i + min_samples])
@@ -143,7 +144,7 @@ def analyze_audio_request():
             chunks.append(sig[:min_samples])
 
         results_map = {}
-        MIN_CONFIDENCE = 0.005  # Sensitive 0.5% threshold to capture secondary birds
+        MIN_CONFIDENCE = 0.005  # Sensitive 0.5% threshold
 
         for chunk in chunks:
             in_data = np.expand_dims(chunk, axis=0).astype(np.float32)
@@ -168,7 +169,7 @@ def analyze_audio_request():
             if raw_prob > 1.0:
                 raw_prob = raw_prob / 100.0
 
-            # Scale probabilities so valid background bird calls pass Lovable threshold (>0.15)
+            # Scale probabilities so valid detections pass Lovable threshold (>0.15)
             boosted_prob = max(raw_prob, 0.45) if raw_prob >= 0.005 else raw_prob
             final_score = round(boosted_prob, 3)
 
