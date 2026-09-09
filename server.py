@@ -12,47 +12,59 @@ import scipy.io.wavfile as wav
 import onnxruntime as ort
 from bottle import route, run, request, response
 
-# Import birdnet_analyzer internals to query its model and label paths
-import birdnet_analyzer.config as cfg
-import birdnet_analyzer.model as bmodel
-import birdnet_analyzer.labels as blabels
+# Import birdnet_analyzer internals
+from birdnet_analyzer import model as bmodel
+from birdnet_analyzer import labels as blabels
+from birdnet_analyzer import config as cfg
 
 IS_BUSY = False
 
-def resolve_model_and_labels():
-    """Finds the ONNX model and species labels path via birdnet_analyzer configuration or disk search."""
+def get_onnx_and_label_paths():
+    """Triggers birdnet_analyzer's ONNX loader if necessary and resolves file locations."""
+    # Ensure ONNX model is loaded in birdnet_analyzer's registry
+    try:
+        bmodel.load_model(use_onnx=True)
+        blabels.load_labels()
+    except Exception as e:
+        print(f"⚠️ bmodel.load_model warning: {e}", flush=True)
+
     model_path = None
     labels_path = None
 
-    # Check birdnet_analyzer's default paths first
-    try:
-        if hasattr(cfg, 'MODEL_PATH') and os.path.exists(cfg.MODEL_PATH):
-            model_path = cfg.MODEL_PATH
-        if hasattr(cfg, 'LABELS_FILE') and os.path.exists(cfg.LABELS_FILE):
-            labels_path = cfg.LABELS_FILE
-    except Exception:
-        pass
+    # Search disk for the downloaded ONNX file
+    search_dirs = [
+        getattr(cfg, 'MODEL_PATH', None),
+        getattr(bmodel, 'MODEL_PATH', None),
+        '/root/.cache',
+        '/usr/local/lib/python3.11/site-packages/birdnet_analyzer',
+        '/app'
+    ]
 
-    # Recursive fallback search on disk
-    if not model_path or not os.path.exists(model_path):
-        candidates = glob.glob('/root/.cache/**/*.onnx', recursive=True) + \
-                     glob.glob('/usr/local/lib/python3.11/site-packages/**/*.onnx', recursive=True) + \
-                     glob.glob('/app/**/*.onnx', recursive=True)
-        for c in candidates:
-            if os.path.getsize(c) > 50000000:  # > 50MB binary file
-                model_path = c
+    for sd in search_dirs:
+        if sd and isinstance(sd, str) and os.path.exists(sd) and sd.endswith('.onnx'):
+            model_path = sd
+            break
+        if sd and isinstance(sd, str) and os.path.exists(sd) and os.path.isdir(sd):
+            matches = glob.glob(os.path.join(sd, '**/*.onnx'), recursive=True)
+            if matches:
+                model_path = matches[0]
                 break
 
-    if not labels_path or not os.path.exists(labels_path):
-        candidates = glob.glob('/root/.cache/**/*label*.txt', recursive=True) + \
-                     glob.glob('/usr/local/lib/python3.11/site-packages/**/*label*.txt', recursive=True) + \
-                     glob.glob('/app/**/*label*.txt', recursive=True)
-        if candidates:
-            labels_path = candidates[0]
+    # Search disk for labels.txt
+    for sd in search_dirs:
+        if sd and isinstance(sd, str) and os.path.exists(sd) and sd.endswith('.txt'):
+            labels_path = sd
+            break
+        if sd and isinstance(sd, str) and os.path.exists(sd) and os.path.isdir(sd):
+            matches = glob.glob(os.path.join(sd, '**/*label*.txt'), recursive=True) or \
+                      glob.glob(os.path.join(sd, '**/labels.txt'), recursive=True)
+            if matches:
+                labels_path = matches[0]
+                break
 
     return model_path, labels_path
 
-MODEL_PATH, LABELS_PATH = resolve_model_and_labels()
+MODEL_PATH, LABELS_PATH = get_onnx_and_label_paths()
 ORT_SESSION = None
 SPECIES_LABELS = []
 
@@ -60,8 +72,8 @@ def load_labels():
     global SPECIES_LABELS, LABELS_PATH
     if not SPECIES_LABELS:
         if not LABELS_PATH or not os.path.exists(LABELS_PATH):
-            _, LABELS_PATH = resolve_model_and_labels()
-        
+            _, LABELS_PATH = get_onnx_and_label_paths()
+            
         if LABELS_PATH and os.path.exists(LABELS_PATH):
             try:
                 with open(LABELS_PATH, 'r', encoding='utf-8') as f:
@@ -74,7 +86,7 @@ def init_onnx_session():
     global ORT_SESSION, MODEL_PATH
     if ORT_SESSION is None:
         if not MODEL_PATH or not os.path.exists(MODEL_PATH):
-            MODEL_PATH, _ = resolve_model_and_labels()
+            MODEL_PATH, _ = get_onnx_and_label_paths()
             
         if MODEL_PATH and os.path.exists(MODEL_PATH):
             opts = ort.SessionOptions()
