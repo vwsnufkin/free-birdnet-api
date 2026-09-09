@@ -1,66 +1,3 @@
-import os
-os.environ['OMP_NUM_THREADS'] = '1'
-
-import sys
-import uuid
-import gc
-import subprocess
-import numpy as np
-import scipy.io.wavfile as wav
-import tflite_runtime.interpreter as tflite
-from bottle import route, run, request, response
-
-IS_BUSY = False
-
-MODEL_PATH = '/app/models/model.tflite'
-LABELS_PATH = '/app/models/labels.txt'
-
-INTERPRETER = None
-INPUT_DETAILS = None
-OUTPUT_DETAILS = None
-SPECIES_LABELS = []
-
-def load_labels():
-    global SPECIES_LABELS
-    if not SPECIES_LABELS and os.path.exists(LABELS_PATH):
-        try:
-            with open(LABELS_PATH, 'r', encoding='utf-8') as f:
-                SPECIES_LABELS = [line.strip() for line in f if line.strip()]
-            print(f"✅ Loaded {len(SPECIES_LABELS)} species labels.", flush=True)
-        except Exception as e:
-            print(f"⚠️ Error reading labels: {e}", flush=True)
-
-def init_tflite_interpreter():
-    global INTERPRETER, INPUT_DETAILS, OUTPUT_DETAILS
-    if INTERPRETER is None and os.path.exists(MODEL_PATH):
-        try:
-            INTERPRETER = tflite.Interpreter(model_path=MODEL_PATH, num_threads=1)
-            INTERPRETER.allocate_tensors()
-            INPUT_DETAILS = INTERPRETER.get_input_details()
-            OUTPUT_DETAILS = INTERPRETER.get_output_details()
-            print(f"🟢 Direct TFLite Interpreter initialized cleanly from {MODEL_PATH}", flush=True)
-        except Exception as e:
-            print(f"❌ TFLite Init Error: {e}", flush=True)
-    return INTERPRETER
-
-@route('/ping', method=['GET', 'OPTIONS'])
-def ping_server():
-    response.headers['Access-Control-Allow-Origin'] = '*'
-    response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
-    response.headers['Access-Control-Allow-Headers'] = 'Origin, Accept, Content-Type, X-Requested-With'
-    if request.method == 'OPTIONS':
-        return {}
-    return {"status": "awake", "busy": IS_BUSY, "model_ready": INTERPRETER is not None}
-
-@route('/status', method=['GET', 'OPTIONS'])
-def check_status():
-    response.headers['Access-Control-Allow-Origin'] = '*'
-    response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
-    response.headers['Access-Control-Allow-Headers'] = 'Origin, Accept, Content-Type, X-Requested-With'
-    if request.method == 'OPTIONS':
-        return {}
-    return {"status": "awake", "busy": IS_BUSY, "model_ready": INTERPRETER is not None}
-
 @route('/analyze', method=['OPTIONS', 'POST'])
 def analyze_audio_request():
     global IS_BUSY
@@ -74,20 +11,29 @@ def analyze_audio_request():
 
     if IS_BUSY:
         response.status = 429
-        return {"error": "Server is currently busy analyzing audio. Please try again in a few seconds."}
+        return {"error": "Server is currently busy analyzing audio."}
 
-    upload = request.files.get('audio')
+    upload = request.files.get('audio') or request.files.get('file')
     if not upload:
         response.headers['Access-Control-Allow-Origin'] = '*'
         return {"error": "No audio file provided"}
 
-    req_id = str(uuid.uuid4())
+    req_id = str(uuid.uuid4())[:8]
     raw_path = f'/tmp/raw_{req_id}'
     wav_path = f'/tmp/rec_{req_id}.wav'
+
+    # Optional: Log incoming location data if passed in form fields
+    lat = request.forms.get('lat') or request.forms.get('latitude')
+    lon = request.forms.get('lon') or request.forms.get('longitude')
+    
+    print(f"📡 [{req_id}] Incoming audio request received!", flush=True)
+    if lat and lon:
+        print(f"🌍 [{req_id}] GPS Location received: Lat {lat}, Lon {lon}", flush=True)
 
     try:
         IS_BUSY = True
         upload.save(raw_path)
+        print(f"✅ [{req_id}] Audio file saved. Converting format...", flush=True)
 
         subprocess.run([
             "ffmpeg", "-y", "-i", raw_path, 
@@ -95,6 +41,8 @@ def analyze_audio_request():
             "-ar", "48000", "-ac", "1", "-c:a", "pcm_s16le", 
             wav_path
         ], check=True, capture_output=True)
+
+        print(f"✅ [{req_id}] Audio successfully converted.", flush=True)
 
         load_labels()
         interpreter = init_tflite_interpreter()
@@ -138,10 +86,13 @@ def analyze_audio_request():
             })
 
         formatted_results = sorted(formatted_results, key=lambda x: x['score'], reverse=True)[:5]
+        print(f"🎯 [{req_id}] Classification complete. Identified {len(formatted_results)} species.", flush=True)
+
         response.headers['Access-Control-Allow-Origin'] = '*' 
         return {"results": formatted_results}
 
     except Exception as e:
+        print(f"❌ [{req_id}] Processing error: {str(e)}", flush=True)
         response.headers['Access-Control-Allow-Origin'] = '*'
         return {"error": str(e)}
 
@@ -150,10 +101,3 @@ def analyze_audio_request():
         if os.path.exists(wav_path): os.remove(wav_path)
         IS_BUSY = False
         gc.collect()
-
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 10000))
-    print(f"🟢 Direct TFLite BirdNET server booting on port {port}...", flush=True)
-    load_labels()
-    init_tflite_interpreter()
-    run(host='0.0.0.0', port=port)
