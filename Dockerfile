@@ -11,15 +11,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Create static models directory
 RUN mkdir -p /app/models
 
-# Download official BirdNET V2.4 FP32 ONNX model & labels directly into /app/models
-RUN python3 -c "import urllib.request; \
-    print('Downloading BirdNET V2.4 ONNX weights...', flush=True); \
-    urllib.request.urlretrieve('https://github.com/kahst/BirdNET-Analyzer/raw/main/birdnet_analyzer/model/BirdNET_GLOBAL_6K_V2.4_Model_FP32.onnx', '/app/models/model.onnx'); \
-    urllib.request.urlretrieve('https://github.com/kahst/BirdNET-Analyzer/raw/main/birdnet_analyzer/model/labels.txt', '/app/models/labels.txt'); \
-    print('Model download complete!', flush=True)"
+# Download official BirdNET V2.4 FP32 ONNX model & labels from the correct repository path
+RUN python3 -c "import urllib.request, os; \
+    print('Downloading BirdNET V2.4 ONNX model...', flush=True); \
+    urllib.request.urlretrieve('https://github.com/birdnet-team/BirdNET-Analyzer/raw/main/birdnet_analyzer/checkpoints/V2.4/BirdNET_GLOBAL_6K_V2.4_Model_FP32.onnx', '/app/models/model.onnx'); \
+    print('Downloading species labels...', flush=True); \
+    urllib.request.urlretrieve('https://github.com/birdnet-team/BirdNET-Analyzer/raw/main/birdnet_analyzer/labels/V2.4/BirdNET_GLOBAL_6K_V2.4_Labels.txt', '/app/models/labels.txt'); \
+    print('Model download size:', os.path.getsize('/app/models/model.onnx'), 'bytes', flush=True)"
 
 COPY . .
 
