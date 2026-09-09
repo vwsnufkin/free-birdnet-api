@@ -12,7 +12,8 @@ import scipy.io.wavfile as wav
 import tflite_runtime.interpreter as tflite
 from bottle import route, run, request, response
 
-IS_BUSY = False
+# Max RAM threshold before queuing (512MB total - 200MB buffer = 312MB)
+MAX_RAM_THRESHOLD_MB = 312.0
 
 MODEL_PATH = '/app/models/model.tflite'
 LABELS_PATH = '/app/models/labels.txt'
@@ -23,9 +24,8 @@ OUTPUT_DETAILS = None
 SPECIES_LABELS = []
 
 def get_ram_usage_mb():
-    """Returns peak memory usage (RAM) in megabytes for the current process."""
+    """Returns current process RAM usage in megabytes."""
     try:
-        # ru_maxrss is in kilobytes on Linux
         return round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0, 2)
     except Exception:
         return 0.0
@@ -62,20 +62,20 @@ def ping_server():
     response.headers['Access-Control-Allow-Headers'] = 'Origin, Accept, Content-Type, X-Requested-With'
     if request.method == 'OPTIONS':
         return {}
-    return {"status": "awake", "busy": IS_BUSY, "model_ready": INTERPRETER is not None}
+    current_ram = get_ram_usage_mb()
+    return {
+        "status": "awake", 
+        "ram_used_mb": current_ram, 
+        "ram_available_mb": round(512.0 - current_ram, 2),
+        "accepting_requests": current_ram < MAX_RAM_THRESHOLD_MB
+    }
 
 @route('/status', method=['GET', 'OPTIONS'])
 def check_status():
-    response.headers['Access-Control-Allow-Origin'] = '*'
-    response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
-    response.headers['Access-Control-Allow-Headers'] = 'Origin, Accept, Content-Type, X-Requested-With'
-    if request.method == 'OPTIONS':
-        return {}
-    return {"status": "awake", "busy": IS_BUSY, "model_ready": INTERPRETER is not None}
+    return ping_server()
 
 @route('/analyze', method=['OPTIONS', 'POST'])
 def analyze_audio_request():
-    global IS_BUSY
     response.headers['Access-Control-Allow-Origin'] = '*'
     response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS, GET'
     response.headers['Access-Control-Allow-Headers'] = 'Origin, Accept, Content-Type, X-Requested-With, X-CSRF-Token, Authorization'
@@ -84,9 +84,16 @@ def analyze_audio_request():
         response.status = 200
         return {}
 
-    if IS_BUSY:
+    # Check RAM buffer: Must have at least 200MB free (RAM < 312MB)
+    current_ram = get_ram_usage_mb()
+    if current_ram >= MAX_RAM_THRESHOLD_MB:
         response.status = 429
-        return {"error": "Server is currently busy analyzing audio."}
+        return {
+            "status": "queued",
+            "error": "Server memory threshold reached. Request queued.",
+            "retry_after_sec": 2,
+            "current_ram_mb": current_ram
+        }
 
     req_start_time = time.perf_counter()
     upload = request.files.get('audio') or request.files.get('file')
@@ -101,21 +108,14 @@ def analyze_audio_request():
     lat = request.forms.get('lat') or request.forms.get('latitude')
     lon = request.forms.get('lon') or request.forms.get('longitude')
     
-    print(f"\n📡 [{req_id}] New Request | Start RAM: {get_ram_usage_mb()} MB", flush=True)
-    if lat and lon:
-        print(f"🌍 [{req_id}] GPS: Lat {lat}, Lon {lon}", flush=True)
+    print(f"\n📡 [{req_id}] New Request | Start RAM: {current_ram} MB", flush=True)
 
     try:
-        IS_BUSY = True
-        
-        # Phase 1: Upload Save Benchmark
         t0 = time.perf_counter()
         upload.save(raw_path)
         raw_size_mb = round(os.path.getsize(raw_path) / (1024 * 1024), 3)
         t_save = round((time.perf_counter() - t0) * 1000, 2)
-        print(f"⏱️ [{req_id}] Saved incoming audio ({raw_size_mb} MB) in {t_save}ms", flush=True)
 
-        # Phase 2: FFmpeg Conversion Benchmark
         t0 = time.perf_counter()
         subprocess.run([
             "ffmpeg", "-y", "-threads", "1", "-i", raw_path, 
@@ -125,7 +125,6 @@ def analyze_audio_request():
         ], check=True, capture_output=True)
         t_ffmpeg = round((time.perf_counter() - t0) * 1000, 2)
         wav_size_mb = round(os.path.getsize(wav_path) / (1024 * 1024), 3)
-        print(f"⏱️ [{req_id}] FFmpeg 10dB conversion ({wav_size_mb} MB WAV) in {t_ffmpeg}ms", flush=True)
 
         load_labels()
         interpreter = init_tflite_interpreter()
@@ -134,12 +133,11 @@ def analyze_audio_request():
             response.headers['Access-Control-Allow-Origin'] = '*'
             return {"error": "TFLite Model interpreter failed to initialize"}
 
-        # Phase 3: Audio Array Preprocessing Benchmark
         t0 = time.perf_counter()
         rate, data = wav.read(wav_path)
         sig = data.astype(np.float32) / 32768.0 if data.dtype == np.int16 else data.astype(np.float32)
 
-        min_samples = 144000  # 3 seconds at 48kHz
+        min_samples = 144000
         if len(sig) < min_samples:
             sig = np.pad(sig, (0, min_samples - len(sig)))
 
@@ -148,7 +146,6 @@ def analyze_audio_request():
             chunks.append(sig[:min_samples])
         t_prep = round((time.perf_counter() - t0) * 1000, 2)
 
-        # Phase 4: TFLite Inference Benchmark
         t0 = time.perf_counter()
         results_map = {}
         MIN_CONFIDENCE = 0.01
@@ -166,7 +163,6 @@ def analyze_audio_request():
                         results_map[label] = float(score)
 
         t_infer = round((time.perf_counter() - t0) * 1000, 2)
-        print(f"⏱️ [{req_id}] Preprocess: {t_prep}ms | Inference ({len(chunks)} chunks): {t_infer}ms", flush=True)
 
         formatted_results = []
         for label, score in results_map.items():
@@ -201,8 +197,6 @@ def analyze_audio_request():
         if formatted_results:
             top = formatted_results[0]
             print(f"🎯 [{req_id}] Top species: {top['commonName']} ({top['confidence']})", flush=True)
-        else:
-            print(f"🎯 [{req_id}] No species met threshold.", flush=True)
 
         total_time_ms = round((time.perf_counter() - req_start_time) * 1000, 2)
         print(f"📊 [{req_id}] Complete in {total_time_ms}ms ({round(total_time_ms/1000, 2)}s) | Peak RAM: {get_ram_usage_mb()} MB", flush=True)
@@ -230,9 +224,7 @@ def analyze_audio_request():
         if os.path.exists(wav_path): 
             try: os.remove(wav_path)
             except: pass
-        IS_BUSY = False
         gc.collect()
-        print(f"🧹 [{req_id}] Cleanup finished. Post-GC RAM: {get_ram_usage_mb()} MB\n", flush=True)
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
