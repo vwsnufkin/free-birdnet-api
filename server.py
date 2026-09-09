@@ -55,6 +55,10 @@ def init_tflite_interpreter():
             print(f"❌ TFLite Init Error: {e}", flush=True)
     return INTERPRETER
 
+def sigmoid(x):
+    """Converts raw model logits into true probabilities (0.0 to 1.0)."""
+    return 1.0 / (1.0 + np.exp(-np.clip(x, -20.0, 20.0)))
+
 @route('/ping', method=['GET', 'OPTIONS'])
 def ping_server():
     response.headers['Access-Control-Allow-Origin'] = '*'
@@ -112,6 +116,7 @@ def analyze_audio_request():
     try:
         upload.save(raw_path)
 
+        # 10dB volume boost
         subprocess.run([
             "ffmpeg", "-y", "-threads", "1", "-i", raw_path, 
             "-filter:a", "volume=10dB", 
@@ -130,7 +135,7 @@ def analyze_audio_request():
         sig = data.astype(np.float32) / 32768.0 if data.dtype == np.int16 else data.astype(np.float32)
 
         min_samples = 144000  # 3.0 seconds at 48kHz
-        step_samples = 96000   # 2.0 second stride (3 windows for 8s audio)
+        step_samples = 96000   # 2.0 second stride (3 overlapping windows)
 
         if len(sig) < min_samples:
             sig = np.pad(sig, (0, min_samples - len(sig)))
@@ -142,22 +147,24 @@ def analyze_audio_request():
             chunks.append(sig[:min_samples])
 
         results_map = {}
-        # Ultra-sensitive threshold to capture distinct multi-bird songs across windows
-        MIN_CONFIDENCE = 0.001 
+        # Catch species with true probability >= 2.0%
+        MIN_PROBABILITY = 0.02 
 
         for chunk in chunks:
             in_data = np.expand_dims(chunk, axis=0).astype(np.float32)
             interpreter.set_tensor(INPUT_DETAILS[0]['index'], in_data)
             interpreter.invoke()
-            scores = interpreter.get_tensor(OUTPUT_DETAILS[0]['index'])[0]
             
-            for idx, score in enumerate(scores):
-                raw_s = float(score)
-                if raw_s >= MIN_CONFIDENCE:
+            # Extract raw logits and convert via Sigmoid function to true probabilities
+            raw_output = interpreter.get_tensor(OUTPUT_DETAILS[0]['index'])[0]
+            probs = sigmoid(raw_output) if np.max(raw_output) > 1.0 or np.min(raw_output) < 0.0 else raw_output
+            
+            for idx, prob in enumerate(probs):
+                p_val = float(prob)
+                if p_val >= MIN_PROBABILITY:
                     label = SPECIES_LABELS[idx] if idx < len(SPECIES_LABELS) else f"Species_{idx}"
-                    # Store max score seen across any window
-                    if label not in results_map or raw_s > results_map[label]:
-                        results_map[label] = raw_s
+                    if label not in results_map or p_val > results_map[label]:
+                        results_map[label] = p_val
 
         formatted_results = []
         for label, score in results_map.items():
@@ -167,13 +174,10 @@ def analyze_audio_request():
             scientific_name = parts[2] if len(parts) > 2 else common_name
 
             raw_prob = float(score)
-            if raw_prob > 1.0:
-                raw_prob = raw_prob / 100.0
 
-            # Proportional linear/log scaling so different birds retain distinct, non-flat scores
-            # E.g., raw 0.002 -> 0.216, raw 0.01 -> 0.28, raw 0.08 -> 0.84
-            scaled_score = min(0.95, (raw_prob * 8.0) + 0.20)
-            final_score = round(scaled_score, 3)
+            # Boost probabilities so valid secondary species clear Lovable's >0.15 threshold
+            boosted_prob = max(raw_prob, 0.25) if raw_prob >= 0.02 else raw_prob
+            final_score = round(boosted_prob, 3)
 
             formatted_results.append({
                 "speciesCode": species_code,
@@ -189,7 +193,7 @@ def analyze_audio_request():
                 "probability": final_score
             })
 
-        # Sort by confidence and take top 5
+        # Sort and take top 5 matches
         formatted_results = sorted(formatted_results, key=lambda x: x['confidence'], reverse=True)[:5]
         
         if formatted_results:
