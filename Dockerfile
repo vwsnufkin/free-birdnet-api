@@ -1,4 +1,4 @@
-FROM python:3.10-slim
+FROM python:3.11-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
@@ -12,14 +12,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Step 1: Copy ALL repository files FIRST (so requirements.txt and server.py exist!)
+# Copy repository files
 COPY . .
 
-# Step 2: Upgrade pip and install requirements
+# Upgrade pip and install dependencies
 RUN pip install --no-cache-dir --upgrade pip
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Environment variables for RAM safety
+# Environment variables for memory management
 ENV OMP_NUM_THREADS=1
 ENV TF_NUM_INTRAOP_THREADS=1
 ENV TF_NUM_INTEROP_THREADS=1
