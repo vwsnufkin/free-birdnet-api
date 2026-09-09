@@ -14,40 +14,15 @@ from bottle import route, run, request, response
 
 IS_BUSY = False
 
-def find_onnx_model():
-    """Finds the pre-packaged ONNX model file inside site-packages or local paths."""
-    patterns = [
-        '/usr/local/lib/python3.11/site-packages/birdnet_analyzer/model/*.onnx',
-        '/usr/local/lib/python3.11/site-packages/**/*.onnx',
-        '/app/**/*.onnx'
-    ]
-    for pattern in patterns:
-        matches = glob.glob(pattern, recursive=True)
-        if matches:
-            return matches[0]
-    return None
+MODEL_PATH = '/app/models/BirdNET_Model.onnx'
+LABELS_PATH = '/app/models/labels.txt'
 
-def find_labels_file():
-    """Finds the species labels.txt file inside birdnet_analyzer package."""
-    patterns = [
-        '/usr/local/lib/python3.11/site-packages/birdnet_analyzer/model/*labels*.txt',
-        '/usr/local/lib/python3.11/site-packages/**/*labels*.txt',
-        '/app/**/*labels*.txt'
-    ]
-    for pattern in patterns:
-        matches = glob.glob(pattern, recursive=True)
-        if matches:
-            return matches[0]
-    return None
-
-MODEL_PATH = find_onnx_model()
-LABELS_PATH = find_labels_file()
 ORT_SESSION = None
 SPECIES_LABELS = []
 
 def load_labels():
-    global SPECIES_LABELS, LABELS_PATH
-    if not SPECIES_LABELS and LABELS_PATH and os.path.exists(LABELS_PATH):
+    global SPECIES_LABELS
+    if not SPECIES_LABELS and os.path.exists(LABELS_PATH):
         try:
             with open(LABELS_PATH, 'r', encoding='utf-8') as f:
                 SPECIES_LABELS = [line.strip() for line in f if line.strip()]
@@ -56,18 +31,16 @@ def load_labels():
             print(f"⚠️ Error reading labels: {e}", flush=True)
 
 def get_onnx_session():
-    global ORT_SESSION, MODEL_PATH
+    global ORT_SESSION
     if ORT_SESSION is None:
-        if not MODEL_PATH:
-            MODEL_PATH = find_onnx_model()
-        if MODEL_PATH and os.path.exists(MODEL_PATH):
+        if os.path.exists(MODEL_PATH):
             opts = ort.SessionOptions()
             opts.intra_op_num_threads = 1
             opts.inter_op_num_threads = 1
             ORT_SESSION = ort.InferenceSession(MODEL_PATH, opts, providers=['CPUExecutionProvider'])
-            print(f"✅ ONNX engine initialized cleanly from {MODEL_PATH}", flush=True)
+            print(f"✅ BirdNET ONNX model loaded cleanly from {MODEL_PATH}", flush=True)
         else:
-            print("❌ No valid ONNX model file found!", flush=True)
+            print(f"❌ Model file not found at {MODEL_PATH}", flush=True)
     return ORT_SESSION
 
 @route('/ping', method=['GET', 'OPTIONS'])
@@ -148,7 +121,6 @@ def analyze_audio_request():
             response.headers['Access-Control-Allow-Origin'] = '*'
             return {"error": "Model initialization failed"}
 
-        # Read 48kHz WAV PCM signal
         rate, data = wav.read(wav_path)
         
         if data.dtype == np.int16:
