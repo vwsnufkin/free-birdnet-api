@@ -1,9 +1,9 @@
 import os
+# Strict CPU thread locking
 os.environ['OMP_NUM_THREADS'] = '1'
 os.environ['TF_NUM_INTRAOP_THREADS'] = '1'
 os.environ['TF_NUM_INTEROP_THREADS'] = '1'
 
-import subprocess
 import csv
 import sys
 import shutil
@@ -11,6 +11,9 @@ import glob
 import uuid
 import gc
 from bottle import route, run, request, response
+
+# Import BirdNET modules directly
+import birdnet_analyzer.analyze as analyzer
 
 IS_BUSY = False
 
@@ -54,8 +57,12 @@ def analyze_audio_request():
         response.headers['Access-Control-Allow-Origin'] = '*'
         return {"error": "No audio file provided"}
 
-    user_lat = request.forms.get('lat', '-1')
-    user_lon = request.forms.get('lon', '-1')
+    try:
+        user_lat = float(request.forms.get('lat', '-1'))
+        user_lon = float(request.forms.get('lon', '-1'))
+    except ValueError:
+        user_lat, user_lon = -1.0, -1.0
+
     print(f"🌍 GPS Location received: Lat {user_lat}, Lon {user_lon}", flush=True)
 
     req_id = str(uuid.uuid4())
@@ -68,29 +75,41 @@ def analyze_audio_request():
         upload.save(raw_path)
         print(f"✅ [{req_id[:8]}] Audio file saved. Converting format...", flush=True)
 
+        # Convert to standard 48kHz mono WAV using ffmpeg
+        import subprocess
         try:
-            subprocess.run(["ffmpeg", "-y", "-i", raw_path, "-filter:a", "volume=5dB", "-ar", "48000", wav_path], check=True, capture_output=True)
+            subprocess.run(["ffmpeg", "-y", "-i", raw_path, "-filter:a", "volume=5dB", "-ar", "48000", "-ac", "1", wav_path], check=True, capture_output=True)
             print(f"✅ [{req_id[:8]}] Audio successfully converted.", flush=True)
         except subprocess.CalledProcessError as e:
             response.headers['Access-Control-Allow-Origin'] = '*'
             return {"error": f"Audio Conversion Failed: {e.stderr.decode()}"}
 
-        print(f"🚀 [{req_id[:8]}] Launching Cornell AI engine with GPS filtering...", flush=True)
+        print(f"🚀 [{req_id[:8]}] Running BirdNET direct inference...", flush=True)
         
-        cmd = [
-            sys.executable, "-m", "birdnet_analyzer.analyze",
-            "-o", out_dir,
-            "--rtype", "csv",
-            "--lat", str(user_lat),
-            "--lon", str(user_lon),
-            "--min_conf", "0.05",
-            "-t", "1",
-            wav_path
-        ]
+        # Ensure output directory exists
+        os.makedirs(out_dir, exist_ok=True)
 
-        # Execute analysis securely as a subprocess
-        proc = subprocess.run(cmd, capture_output=True, text=True)
-        print(f"✅ [{req_id[:8]}] AI Engine finished processing cleanly.", flush=True)
+        # Direct python call to analyze file without launching subshell or sys.exit
+        try:
+            analyzer.analyze_file((
+                wav_path,
+                out_dir,
+                0.05,       # min_conf (5% detection sensitivity)
+                user_lat,   # lat
+                user_lon,   # lon
+                -1,         # week
+                0.15,       # sf_thresh
+                None,       # slist
+                1.0,        # sensitivity
+                0.0,        # overlap
+                True,       # rtype csv
+                False,      # rtype table
+                False,      # rtype audacity
+                False       # rtype kaleidoscope
+            ))
+            print(f"✅ [{req_id[:8]}] AI Engine finished processing cleanly.", flush=True)
+        except Exception as e:
+            print(f"❌ Execution error: {e}", flush=True)
 
         results = []
         if os.path.exists(out_dir):
@@ -123,5 +142,5 @@ def analyze_audio_request():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
-    print(f"🟢 Isolated process server booting on port {port}...", flush=True)
+    print(f"🟢 Direct-inference server booting on port {port}...", flush=True)
     run(host='0.0.0.0', port=port)
