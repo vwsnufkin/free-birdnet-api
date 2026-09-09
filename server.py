@@ -1,10 +1,12 @@
 import os
-# Match model cache paths established in Dockerfile
+# Force ONNX mode and cache directory
+os.environ['BIRDNET_USE_ONNX'] = '1'
 os.environ['BIRDNET_MODEL_PATH'] = '/app/model_cache'
 os.environ['XDG_CACHE_HOME'] = '/app/model_cache'
 os.environ['TORCH_HOME'] = '/app/model_cache'
 os.environ['HF_HOME'] = '/app/model_cache'
 
+# Strict thread limits
 os.environ['OMP_NUM_THREADS'] = '1'
 os.environ['TF_NUM_INTRAOP_THREADS'] = '1'
 os.environ['TF_NUM_INTEROP_THREADS'] = '1'
@@ -20,8 +22,8 @@ from bottle import route, run, request, response
 
 IS_BUSY = False
 
-def run_isolated_birdnet(wav_path, out_dir, lat, lon):
-    """Run BirdNET CLI module in a dedicated sub-process to prevent sys.exit from killing Bottle."""
+def run_onnx_birdnet(wav_path, out_dir, lat, lon):
+    """Run BirdNET using lightweight ONNX engine in a single-threaded process."""
     cmd = [
         sys.executable, "-m", "birdnet_analyzer.analyze",
         "-o", out_dir,
@@ -29,12 +31,16 @@ def run_isolated_birdnet(wav_path, out_dir, lat, lon):
         "--lat", str(lat),
         "--lon", str(lon),
         "--min_conf", "0.05",
+        "--use_onnx",
         "-t", "1",
+        "-b", "1",
         wav_path
     ]
     env = os.environ.copy()
     env['XDG_CACHE_HOME'] = '/app/model_cache'
     env['BIRDNET_MODEL_PATH'] = '/app/model_cache'
+    env['BIRDNET_USE_ONNX'] = '1'
+    
     return subprocess.run(cmd, capture_output=True, text=True, env=env)
 
 @route('/ping', method=['GET', 'OPTIONS'])
@@ -102,11 +108,11 @@ def analyze_audio_request():
             response.headers['Access-Control-Allow-Origin'] = '*'
             return {"error": f"Audio Conversion Failed: {e.stderr.decode()}"}
 
-        print(f"🚀 [{req_id[:8]}] Running isolated BirdNET engine...", flush=True)
+        print(f"🚀 [{req_id[:8]}] Running ONNX BirdNET engine...", flush=True)
         os.makedirs(out_dir, exist_ok=True)
 
-        # Run inference in subprocess
-        proc = run_isolated_birdnet(wav_path, out_dir, user_lat, user_lon)
+        # Run ONNX inference
+        proc = run_onnx_birdnet(wav_path, out_dir, user_lat, user_lon)
         
         print(f"✅ [{req_id[:8]}] AI Engine finished processing cleanly.", flush=True)
 
@@ -141,5 +147,5 @@ def analyze_audio_request():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
-    print(f"🟢 Isolated-process BirdNET server booting on port {port}...", flush=True)
+    print(f"🟢 Lightweight ONNX BirdNET server booting on port {port}...", flush=True)
     run(host='0.0.0.0', port=port)
