@@ -7,6 +7,7 @@ import glob
 import uuid
 import gc
 import subprocess
+import importlib.resources
 import numpy as np
 import scipy.io.wavfile as wav
 import onnxruntime as ort
@@ -14,33 +15,49 @@ from bottle import route, run, request, response
 
 IS_BUSY = False
 
-MODEL_PATH = '/app/models/BirdNET_Model.onnx'
-LABELS_PATH = '/app/models/labels.txt'
+def find_package_file(filename_pattern):
+    """Finds a model asset directly inside the installed birdnet_analyzer package."""
+    # Look inside birdnet_analyzer site-packages subdirectories
+    possible_paths = glob.glob(f'/usr/local/lib/python3.11/site-packages/birdnet_analyzer/**/{filename_pattern}', recursive=True) + \
+                     glob.glob(f'/app/**/{filename_pattern}', recursive=True)
+    for p in possible_paths:
+        if os.path.exists(p) and os.path.getsize(p) > 0:
+            return p
+    return None
+
+MODEL_PATH = find_package_file('*FP32*.onnx') or find_package_file('*.onnx')
+LABELS_PATH = find_package_file('*label*.txt') or find_package_file('labels.txt')
 
 ORT_SESSION = None
 SPECIES_LABELS = []
 
 def load_labels():
-    global SPECIES_LABELS
-    if not SPECIES_LABELS and os.path.exists(LABELS_PATH):
-        try:
-            with open(LABELS_PATH, 'r', encoding='utf-8') as f:
-                SPECIES_LABELS = [line.strip() for line in f if line.strip()]
-            print(f"✅ Loaded {len(SPECIES_LABELS)} species labels from {LABELS_PATH}", flush=True)
-        except Exception as e:
-            print(f"⚠️ Error reading labels: {e}", flush=True)
+    global SPECIES_LABELS, LABELS_PATH
+    if not SPECIES_LABELS:
+        if not LABELS_PATH:
+            LABELS_PATH = find_package_file('*label*.txt') or find_package_file('labels.txt')
+        if LABELS_PATH and os.path.exists(LABELS_PATH):
+            try:
+                with open(LABELS_PATH, 'r', encoding='utf-8') as f:
+                    SPECIES_LABELS = [line.strip() for line in f if line.strip()]
+                print(f"✅ Loaded {len(SPECIES_LABELS)} species labels from {LABELS_PATH}", flush=True)
+            except Exception as e:
+                print(f"⚠️ Error reading labels: {e}", flush=True)
 
 def get_onnx_session():
-    global ORT_SESSION
+    global ORT_SESSION, MODEL_PATH
     if ORT_SESSION is None:
-        if os.path.exists(MODEL_PATH):
+        if not MODEL_PATH or os.path.getsize(MODEL_PATH) < 100000000:
+            MODEL_PATH = find_package_file('*FP32*.onnx') or find_package_file('*.onnx')
+        
+        if MODEL_PATH and os.path.exists(MODEL_PATH):
             opts = ort.SessionOptions()
             opts.intra_op_num_threads = 1
             opts.inter_op_num_threads = 1
             ORT_SESSION = ort.InferenceSession(MODEL_PATH, opts, providers=['CPUExecutionProvider'])
-            print(f"✅ BirdNET ONNX model loaded cleanly from {MODEL_PATH}", flush=True)
+            print(f"✅ ONNX model loaded cleanly from package: {MODEL_PATH}", flush=True)
         else:
-            print(f"❌ Model file not found at {MODEL_PATH}", flush=True)
+            print(f"❌ Model file invalid or missing: {MODEL_PATH}", flush=True)
     return ORT_SESSION
 
 @route('/ping', method=['GET', 'OPTIONS'])
