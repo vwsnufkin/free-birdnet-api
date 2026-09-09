@@ -14,29 +14,30 @@ from bottle import route, run, request, response
 
 IS_BUSY = False
 
+# Direct path to model downloaded in Dockerfile
+LOCAL_MODEL = '/app/models/BirdNET_GLOBAL_6K_V2.4_Model_FP32.onnx'
+
 def locate_onnx_model():
-    """Locate the ONNX model file inside site-packages or local paths."""
-    possible_paths = glob.glob('/usr/local/lib/python3.11/site-packages/birdnet_analyzer/model/*.onnx') + \
-                     glob.glob('/usr/local/lib/python3.11/site-packages/birdnet_analyzer/**/*.onnx', recursive=True) + \
-                     glob.glob('/app/**/*.onnx', recursive=True)
+    if os.path.exists(LOCAL_MODEL):
+        return LOCAL_MODEL
+    possible_paths = glob.glob('/app/**/*.onnx', recursive=True) + \
+                     glob.glob('/usr/local/lib/python3.11/site-packages/**/*.onnx', recursive=True)
     if possible_paths:
         return possible_paths[0]
     return None
 
-MODEL_PATH = locate_onnx_model()
 ORT_SESSION = None
 
 def get_onnx_session():
-    global ORT_SESSION, MODEL_PATH
+    global ORT_SESSION
     if ORT_SESSION is None:
-        if not MODEL_PATH:
-            MODEL_PATH = locate_onnx_model()
-        if MODEL_PATH and os.path.exists(MODEL_PATH):
+        model_path = locate_onnx_model()
+        if model_path and os.path.exists(model_path):
             opts = ort.SessionOptions()
             opts.intra_op_num_threads = 1
             opts.inter_op_num_threads = 1
-            ORT_SESSION = ort.InferenceSession(MODEL_PATH, opts, providers=['CPUExecutionProvider'])
-            print(f"✅ ONNX model loaded into memory from {MODEL_PATH}", flush=True)
+            ORT_SESSION = ort.InferenceSession(model_path, opts, providers=['CPUExecutionProvider'])
+            print(f"✅ ONNX model loaded cleanly into memory from {model_path}", flush=True)
     return ORT_SESSION
 
 @route('/ping', method=['GET', 'OPTIONS'])
@@ -110,7 +111,6 @@ def analyze_audio_request():
 
         print(f"🚀 [{req_id[:8]}] Running ONNX inference...", flush=True)
 
-        # Read converted 48kHz WAV
         rate, data = wav.read(wav_path)
         
         if data.dtype == np.int16:
