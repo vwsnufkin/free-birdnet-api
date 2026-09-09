@@ -14,71 +14,30 @@ from bottle import route, run, request, response
 
 IS_BUSY = False
 
-def find_onnx_and_labels():
-    """Finds the ONNX model file and labels.txt across cache and site-packages locations."""
-    search_paths = [
-        '/root/.cache/birdnet*/**/*.onnx',
-        '/root/.cache/**/*.onnx',
-        '/tmp/**/*.onnx',
-        '/usr/local/lib/python3.11/site-packages/**/*.onnx',
-        '/app/**/*.onnx'
-    ]
-    model_path = None
-    for pattern in search_paths:
-        matches = glob.glob(pattern, recursive=True)
-        for m in matches:
-            if os.path.getsize(m) > 50000000:  # Must be larger than 50MB (actual model is ~224MB)
-                model_path = m
-                break
-        if model_path:
-            break
+MODEL_PATH = '/app/models/model.onnx'
+LABELS_PATH = '/app/models/labels.txt'
 
-    label_search_paths = [
-        '/root/.cache/birdnet*/**/labels.txt',
-        '/root/.cache/**/labels.txt',
-        '/usr/local/lib/python3.11/site-packages/**/labels.txt',
-        '/app/**/labels.txt'
-    ]
-    labels_path = None
-    for pattern in label_search_paths:
-        matches = glob.glob(pattern, recursive=True)
-        if matches:
-            labels_path = matches[0]
-            break
-
-    return model_path, labels_path
-
-MODEL_PATH, LABELS_PATH = find_onnx_and_labels()
 ORT_SESSION = None
 SPECIES_LABELS = []
 
 def load_labels():
-    global SPECIES_LABELS, LABELS_PATH
-    if not SPECIES_LABELS:
-        if not LABELS_PATH:
-            _, LABELS_PATH = find_onnx_and_labels()
-        if LABELS_PATH and os.path.exists(LABELS_PATH):
-            try:
-                with open(LABELS_PATH, 'r', encoding='utf-8') as f:
-                    SPECIES_LABELS = [line.strip() for line in f if line.strip()]
-                print(f"✅ Loaded {len(SPECIES_LABELS)} species labels from {LABELS_PATH}", flush=True)
-            except Exception as e:
-                print(f"⚠️ Error reading labels: {e}", flush=True)
+    global SPECIES_LABELS
+    if not SPECIES_LABELS and os.path.exists(LABELS_PATH):
+        try:
+            with open(LABELS_PATH, 'r', encoding='utf-8') as f:
+                SPECIES_LABELS = [line.strip() for line in f if line.strip()]
+            print(f"✅ Successfully loaded {len(SPECIES_LABELS)} species labels.", flush=True)
+        except Exception as e:
+            print(f"⚠️ Error reading labels file: {e}", flush=True)
 
-def get_onnx_session():
-    global ORT_SESSION, MODEL_PATH
-    if ORT_SESSION is None:
-        if not MODEL_PATH or not os.path.exists(MODEL_PATH):
-            MODEL_PATH, _ = find_onnx_and_labels()
-            
-        if MODEL_PATH and os.path.exists(MODEL_PATH):
-            opts = ort.SessionOptions()
-            opts.intra_op_num_threads = 1
-            opts.inter_op_num_threads = 1
-            ORT_SESSION = ort.InferenceSession(MODEL_PATH, opts, providers=['CPUExecutionProvider'])
-            print(f"✅ ONNX model loaded cleanly from: {MODEL_PATH}", flush=True)
-        else:
-            print("❌ ONNX Model file not found in cache or system paths!", flush=True)
+def init_onnx_session():
+    global ORT_SESSION
+    if ORT_SESSION is None and os.path.exists(MODEL_PATH):
+        opts = ort.SessionOptions()
+        opts.intra_op_num_threads = 1
+        opts.inter_op_num_threads = 1
+        ORT_SESSION = ort.InferenceSession(MODEL_PATH, opts, providers=['CPUExecutionProvider'])
+        print(f"🟢 BirdNET V2.4 ONNX Session initialized cleanly from {MODEL_PATH}", flush=True)
     return ORT_SESSION
 
 @route('/ping', method=['GET', 'OPTIONS'])
@@ -139,6 +98,7 @@ def analyze_audio_request():
         print(f"✅ [{req_id[:8]}] Audio file saved. Converting format...", flush=True)
 
         try:
+            # Convert audio input to strict 48kHz mono 16-bit PCM WAV
             subprocess.run([
                 "ffmpeg", "-y", "-i", raw_path, 
                 "-filter:a", "volume=10dB", 
@@ -150,15 +110,17 @@ def analyze_audio_request():
             response.headers['Access-Control-Allow-Origin'] = '*'
             return {"error": f"Audio Conversion Failed: {e.stderr.decode()}"}
 
-        print(f"🚀 [{req_id[:8]}] Running ONNX inference...", flush=True)
+        print(f"🚀 [{req_id[:8]}] Executing direct ONNX inference...", flush=True)
 
         load_labels()
-        session = get_onnx_session()
+        session = init_onnx_session()
 
         if not session:
+            print(f"❌ [{req_id[:8]}] ONNX session failed to start.", flush=True)
             response.headers['Access-Control-Allow-Origin'] = '*'
-            return {"error": "Model initialization failed"}
+            return {"results": []}
 
+        # Read 48kHz WAV audio samples
         rate, data = wav.read(wav_path)
         
         if data.dtype == np.int16:
@@ -166,6 +128,7 @@ def analyze_audio_request():
         else:
             sig = data.astype(np.float32)
 
+        # 3 seconds @ 48kHz = 144,000 samples required by BirdNET V2.4
         min_samples = 144000
         if len(sig) < min_samples:
             sig = np.pad(sig, (0, min_samples - len(sig)))
@@ -188,7 +151,7 @@ def analyze_audio_request():
             scores = outputs[0][0]
             
             for idx, score in enumerate(scores):
-                if score >= 0.03:
+                if score >= 0.03: # 3% confidence filter
                     label = SPECIES_LABELS[idx] if idx < len(SPECIES_LABELS) else f"Species_{idx}"
                     if label not in results_map or score > results_map[label]:
                         results_map[label] = float(score)
@@ -207,7 +170,7 @@ def analyze_audio_request():
 
         formatted_results = sorted(formatted_results, key=lambda x: x['score'], reverse=True)[:5]
         
-        print(f"🎉 [{req_id[:8]}] Success! Returning top {len(formatted_results)} species matches.", flush=True)
+        print(f"🎉 [{req_id[:8]}] Success! Identified top {len(formatted_results)} species.", flush=True)
         response.headers['Access-Control-Allow-Origin'] = '*' 
         return {"results": formatted_results}
 
@@ -225,4 +188,6 @@ def analyze_audio_request():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
     print(f"🟢 Direct ONNX BirdNET server booting on port {port}...", flush=True)
+    load_labels()
+    init_onnx_session()
     run(host='0.0.0.0', port=port)
