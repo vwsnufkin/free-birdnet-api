@@ -25,7 +25,7 @@ def load_labels():
     if not SPECIES_LABELS and os.path.exists(LABELS_PATH):
         try:
             with open(LABELS_PATH, 'r', encoding='utf-8') as f:
-                SPECIES_LABELS = [line.strip() for line in f if line.strip()]
+                SPECIES_LABELS = [line.strip().replace('\r', '') for line in f if line.strip()]
             print(f"✅ Loaded {len(SPECIES_LABELS)} species labels.", flush=True)
         except Exception as e:
             print(f"⚠️ Error reading labels: {e}", flush=True)
@@ -126,6 +126,9 @@ def analyze_audio_request():
 
         results_map = {}
 
+        # Set to 1% threshold (0.01) for detailed testing
+        MIN_CONFIDENCE = 0.01
+
         for chunk in chunks:
             in_data = np.expand_dims(chunk, axis=0).astype(np.float32)
             interpreter.set_tensor(INPUT_DETAILS[0]['index'], in_data)
@@ -133,7 +136,7 @@ def analyze_audio_request():
             scores = interpreter.get_tensor(OUTPUT_DETAILS[0]['index'])[0]
             
             for idx, score in enumerate(scores):
-                if score >= 0.03:
+                if score >= MIN_CONFIDENCE:
                     label = SPECIES_LABELS[idx] if idx < len(SPECIES_LABELS) else f"Species_{idx}"
                     if label not in results_map or score > results_map[label]:
                         results_map[label] = float(score)
@@ -160,6 +163,14 @@ def analyze_audio_request():
             })
 
         formatted_results = sorted(formatted_results, key=lambda x: x['score'], reverse=True)[:5]
+        
+        # Log top prediction to Render console for debugging
+        if formatted_results:
+            top = formatted_results[0]
+            print(f"🎯 [{req_id}] Top prediction: {top['commonName']} ({top['score']})", flush=True)
+        else:
+            print(f"🎯 [{req_id}] No species predictions met the 1% threshold.", flush=True)
+
         print(f"🎯 [{req_id}] Classification complete. Identified {len(formatted_results)} species.", flush=True)
 
         response.headers['Access-Control-Allow-Origin'] = '*' 
