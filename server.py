@@ -12,12 +12,11 @@ import scipy.io.wavfile as wav
 import onnxruntime as ort
 from bottle import route, run, request, response
 
-# Load species list directly from installed package resources
-from birdnet_analyzer import species
+# Import species list function directly
+from birdnet_analyzer.species import get_species_list
 
 IS_BUSY = False
 
-# Find the installed ONNX model file inside site-packages
 def locate_onnx_model():
     possible_paths = glob.glob('/usr/local/lib/python3.11/site-packages/birdnet_analyzer/model/*.onnx') + \
                      glob.glob('/usr/local/lib/python3.11/site-packages/birdnet_analyzer/**/*.onnx', recursive=True) + \
@@ -96,7 +95,6 @@ def analyze_audio_request():
         upload.save(raw_path)
         print(f"✅ [{req_id[:8]}] Audio file saved. Converting format...", flush=True)
 
-        # Convert audio to strict 48kHz mono 16-bit PCM WAV using ffmpeg
         try:
             subprocess.run([
                 "ffmpeg", "-y", "-i", raw_path, 
@@ -111,25 +109,26 @@ def analyze_audio_request():
 
         print(f"🚀 [{req_id[:8]}] Filtering species list by GPS...", flush=True)
         
-        # Get localized species filter list
-        local_species = species.get_species_list(user_lat, user_lon, 0.05)
+        # Get localized species filter list using direct function call
+        try:
+            local_species = get_species_list(user_lat, user_lon, 0.05)
+        except Exception:
+            local_species = []
+
         print(f"🌍 Found {len(local_species)} species relevant to coordinates ({user_lat}, {user_lon})", flush=True)
 
         # Read converted audio WAV signal
         rate, data = wav.read(wav_path)
         
-        # Normalize audio signal float32 between -1.0 and 1.0
         if data.dtype == np.int16:
             sig = data.astype(np.float32) / 32768.0
         else:
             sig = data.astype(np.float32)
 
-        # Pad audio if shorter than 3 seconds (144,000 samples at 48kHz)
         min_samples = 144000
         if len(sig) < min_samples:
             sig = np.pad(sig, (0, min_samples - len(sig)))
 
-        # Chunk audio signal into 3-second segments
         chunks = []
         step = 144000
         for i in range(0, len(sig) - min_samples + 1, step):
@@ -140,24 +139,18 @@ def analyze_audio_request():
             chunks.append(sig[:min_samples])
 
         session = get_onnx_session()
-        
         results_map = {}
 
         if session:
             input_name = session.get_inputs()[0].name
             
             for chunk in chunks:
-                # Shape input array to (1, 144000)
                 in_data = np.expand_dims(chunk, axis=0).astype(np.float32)
-                
-                # Execute pure ONNX inference
                 outputs = session.run(None, {input_name: in_data})
-                scores = outputs[0][0]  # Raw probabilities array
+                scores = outputs[0][0]
                 
-                # Filter results matching regional species
                 for idx, score in enumerate(scores):
-                    if score >= 0.03:  # 3% confidence threshold
-                        # Map index to species if available
+                    if score >= 0.03:
                         sp_name = local_species[idx] if idx < len(local_species) else f"Species_{idx}"
                         if sp_name not in results_map or score > results_map[sp_name]:
                             results_map[sp_name] = float(score)
