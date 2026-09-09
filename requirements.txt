@@ -2,4 +2,5 @@ bottle>=0.13.4
 onnxruntime>=1.15.0
 numpy<2.0.0
 scipy>=1.10.0
---no-deps birdnet-analyzer
+--no-deps
+birdnet-analyzer
