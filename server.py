@@ -13,54 +13,53 @@ import onnxruntime as ort
 from bottle import route, run, request, response
 
 # Import birdnet_analyzer internals
+import birdnet_analyzer.config as cfg
 from birdnet_analyzer import model as bmodel
 from birdnet_analyzer import labels as blabels
-from birdnet_analyzer import config as cfg
 
 IS_BUSY = False
 
 def get_onnx_and_label_paths():
-    """Triggers birdnet_analyzer's ONNX loader if necessary and resolves file locations."""
-    # Ensure ONNX model is loaded in birdnet_analyzer's registry
+    """Configures ONNX in birdnet_analyzer and locates file paths."""
     try:
-        bmodel.load_model(use_onnx=True)
+        cfg.MODEL_TYPE = 'onnx'
+        bmodel.load_model()
         blabels.load_labels()
     except Exception as e:
-        print(f"⚠️ bmodel.load_model warning: {e}", flush=True)
+        print(f"⚠️ Model load warning: {e}", flush=True)
 
     model_path = None
     labels_path = None
 
-    # Search disk for the downloaded ONNX file
     search_dirs = [
         getattr(cfg, 'MODEL_PATH', None),
-        getattr(bmodel, 'MODEL_PATH', None),
         '/root/.cache',
         '/usr/local/lib/python3.11/site-packages/birdnet_analyzer',
         '/app'
     ]
 
     for sd in search_dirs:
-        if sd and isinstance(sd, str) and os.path.exists(sd) and sd.endswith('.onnx'):
-            model_path = sd
-            break
-        if sd and isinstance(sd, str) and os.path.exists(sd) and os.path.isdir(sd):
-            matches = glob.glob(os.path.join(sd, '**/*.onnx'), recursive=True)
-            if matches:
-                model_path = matches[0]
+        if sd and isinstance(sd, str) and os.path.exists(sd):
+            if sd.endswith('.onnx'):
+                model_path = sd
                 break
+            elif os.path.isdir(sd):
+                matches = glob.glob(os.path.join(sd, '**/*.onnx'), recursive=True)
+                if matches:
+                    model_path = matches[0]
+                    break
 
-    # Search disk for labels.txt
     for sd in search_dirs:
-        if sd and isinstance(sd, str) and os.path.exists(sd) and sd.endswith('.txt'):
-            labels_path = sd
-            break
-        if sd and isinstance(sd, str) and os.path.exists(sd) and os.path.isdir(sd):
-            matches = glob.glob(os.path.join(sd, '**/*label*.txt'), recursive=True) or \
-                      glob.glob(os.path.join(sd, '**/labels.txt'), recursive=True)
-            if matches:
-                labels_path = matches[0]
+        if sd and isinstance(sd, str) and os.path.exists(sd):
+            if sd.endswith('.txt'):
+                labels_path = sd
                 break
+            elif os.path.isdir(sd):
+                matches = glob.glob(os.path.join(sd, '**/*label*.txt'), recursive=True) or \
+                          glob.glob(os.path.join(sd, '**/labels.txt'), recursive=True)
+                if matches:
+                    labels_path = matches[0]
+                    break
 
     return model_path, labels_path
 
