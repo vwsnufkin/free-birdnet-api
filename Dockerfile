@@ -4,7 +4,6 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV OMP_NUM_THREADS=1
 
-# Install only minimal required dependencies (no GUI/X11 libraries)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     curl \
@@ -16,7 +15,8 @@ WORKDIR /app
 COPY . .
 
 RUN pip install --no-cache-dir --upgrade pip
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --no-deps -r requirements.txt
+RUN pip install --no-cache-dir bottle onnxruntime "numpy<2.0.0" scipy
 
 # Download the BirdNET ONNX model file during build
 RUN mkdir -p /app/models && \
