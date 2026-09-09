@@ -94,6 +94,7 @@ def analyze_audio_request():
         
         old_argv = sys.argv
         
+        # 💡 FIX: Replaced --n_workers with -t 1
         sys.argv = [
             "birdnet_analyzer.analyze",
             "-o", out_dir,
@@ -101,7 +102,7 @@ def analyze_audio_request():
             "--lat", str(user_lat),
             "--lon", str(user_lon),
             "--min_conf", "0.15",
-            "--n_workers", "1",
+            "-t", "1",
             wav_path
         ]
 
@@ -145,9 +146,7 @@ def analyze_audio_request():
         gc.collect()
 
 if __name__ == '__main__':
-    # Execute model pre-load right as container boots
     warmup_models()
-    
     port = int(os.environ.get('PORT', 10000))
     print(f"🟢 Location-aware pre-loaded server booting on port {port}...", flush=True)
     run(host='0.0.0.0', port=port)
