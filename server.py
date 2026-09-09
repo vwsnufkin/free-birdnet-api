@@ -1,5 +1,5 @@
 import os
-# Enforce strict CPU/memory isolation
+# Enforce strict single-thread execution to preserve RAM
 os.environ['OMP_NUM_THREADS'] = '1'
 os.environ['TF_NUM_INTRAOP_THREADS'] = '1'
 os.environ['TF_NUM_INTEROP_THREADS'] = '1'
@@ -14,19 +14,7 @@ import gc
 import runpy
 from bottle import route, run, request, response
 
-# Global lock state to signal server status to Lovable
 IS_BUSY = False
-
-def warmup_models():
-    """Cache species taxonomy and acoustic models at server boot."""
-    print("⏳ Warming up BirdNET models on startup...", flush=True)
-    try:
-        from birdnet_analyzer import species
-        # Warmup species cache using local EU coordinates (Brussels)
-        species.get_species_list(50.85, 4.35, 0.15)
-        print("✅ Species taxonomy warmed up successfully!", flush=True)
-    except Exception as e:
-        print(f"⚠️ Warmup info: {e}", flush=True)
 
 @route('/ping', method=['GET', 'OPTIONS'])
 def ping_server():
@@ -57,7 +45,6 @@ def analyze_audio_request():
         response.status = 200
         return {}
 
-    # Lock out concurrent requests to protect RAM
     if IS_BUSY:
         response.status = 429
         return {"error": "Server is currently busy analyzing audio. Please try again in a few seconds."}
@@ -133,7 +120,7 @@ def analyze_audio_request():
                 response.headers['Access-Control-Allow-Origin'] = '*' 
                 return {"results": results}
             
-        print(f"⚠️ [{req_id[:8]}] No CSV results generated (no bird songs detected above 15% confidence).", flush=True)
+        print(f"⚠️ [{req_id[:8]}] No CSV results generated (no bird vocalizations detected above 15% confidence).", flush=True)
         response.headers['Access-Control-Allow-Origin'] = '*' 
         return {"results": []}
 
@@ -145,7 +132,6 @@ def analyze_audio_request():
         gc.collect()
 
 if __name__ == '__main__':
-    warmup_models()
     port = int(os.environ.get('PORT', 10000))
-    print(f"🟢 Location-aware pre-loaded server booting on port {port}...", flush=True)
+    print(f"🟢 Pre-baked model server booting on port {port}...", flush=True)
     run(host='0.0.0.0', port=port)
