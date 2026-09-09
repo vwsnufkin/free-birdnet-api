@@ -1,5 +1,5 @@
 import os
-# Force strict CPU thread limits to preserve memory
+# Strict single-thread limits to preserve RAM under 512MB
 os.environ['OMP_NUM_THREADS'] = '1'
 os.environ['TF_NUM_INTRAOP_THREADS'] = '1'
 os.environ['TF_NUM_INTEROP_THREADS'] = '1'
@@ -10,11 +10,9 @@ import shutil
 import glob
 import uuid
 import gc
+import runpy
 import subprocess
 from bottle import route, run, request, response
-
-# Import BirdNET analyzer module directly
-import birdnet_analyzer.analyze as analyzer
 
 IS_BUSY = False
 
@@ -83,24 +81,34 @@ def analyze_audio_request():
             response.headers['Access-Control-Allow-Origin'] = '*'
             return {"error": f"Audio Conversion Failed: {e.stderr.decode()}"}
 
-        print(f"🚀 [{req_id[:8]}] Running BirdNET direct inference...", flush=True)
+        print(f"🚀 [{req_id[:8]}] Running BirdNET inference engine...", flush=True)
         
         os.makedirs(out_dir, exist_ok=True)
 
+        # Intercept sys.argv to execute module internally
+        old_argv = sys.argv
+        sys.argv = [
+            "birdnet_analyzer.analyze",
+            "-o", out_dir,
+            "--rtype", "csv",
+            "--lat", str(user_lat),
+            "--lon", str(user_lon),
+            "--min_conf", "0.05",
+            "-t", "1",
+            wav_path
+        ]
+
         try:
-            # Call analyzer.analyze() directly
-            analyzer.analyze(
-                wav_path,
-                out_dir,
-                lat=user_lat,
-                lon=user_lon,
-                min_conf=0.05,
-                threads=1,
-                rtype=["csv"]
-            )
+            # Run module execution and suppress internal SystemExit
+            runpy.run_module('birdnet_analyzer.analyze', run_name='__main__', alter_sys=True)
             print(f"✅ [{req_id[:8]}] AI Engine finished processing cleanly.", flush=True)
+        except SystemExit:
+            # Catch internal sys.exit(0) call from CLI parser to prevent server restart
+            print(f"✅ [{req_id[:8]}] Inference completed (caught SystemExit).", flush=True)
         except Exception as e:
             print(f"❌ Execution error: {e}", flush=True)
+        finally:
+            sys.argv = old_argv
 
         results = []
         if os.path.exists(out_dir):
@@ -133,5 +141,5 @@ def analyze_audio_request():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
-    print(f"🟢 Direct API server booting on port {port}...", flush=True)
+    print(f"🟢 Production-ready BirdNET server booting on port {port}...", flush=True)
     run(host='0.0.0.0', port=port)
