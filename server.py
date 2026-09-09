@@ -30,6 +30,45 @@ def get_ram_usage_mb():
     except Exception:
         return 0.0
 
+def get_country_code(lat, lon):
+    """Fast, zero-dependency bounding box lookup for GPS coordinates."""
+    if lat is None or lon is None:
+        return "Global"
+    try:
+        lat, lon = float(lat), float(lon)
+    except (ValueError, TypeError):
+        return "Global"
+
+    # Western Europe (BE, NL, FR, DE, UK, etc.)
+    if 35.0 <= lat <= 60.0 and -10.0 <= lon <= 30.0:
+        if 49.5 <= lat <= 51.5 and 2.5 <= lon <= 6.5:
+            return "BE"
+        elif 50.7 <= lat <= 53.6 and 3.3 <= lon <= 7.2:
+            return "NL"
+        elif 41.3 <= lat <= 51.1 and -5.1 <= lon <= 9.6:
+            return "FR"
+        elif 47.3 <= lat <= 55.1 and 5.8 <= lon <= 15.0:
+            return "DE"
+        elif 49.9 <= lat <= 60.9 and -8.6 <= lon <= 1.8:
+            return "UK"
+        return "EU"
+
+    # South America (BR, AR, CO, PE, CL, etc.)
+    if -56.0 <= lat <= 13.0 and -82.0 <= lon <= -34.0:
+        if -33.7 <= lat <= 5.3 and -73.9 <= lon <= -34.7:
+            return "BR"
+        elif -55.1 <= lat <= -21.8 and -73.6 <= lon <= -53.6:
+            return "AR"
+        elif -4.2 <= lat <= 12.5 and -79.0 <= lon <= -66.8:
+            return "CO"
+        return "SA"
+
+    # North America
+    if 24.5 <= lat <= 49.0 and -125.0 <= lon <= -66.9:
+        return "US"
+
+    return "Global"
+
 def load_labels():
     global SPECIES_LABELS
     if not SPECIES_LABELS and os.path.exists(LABELS_PATH):
@@ -110,8 +149,9 @@ def analyze_audio_request():
 
     lat = request.forms.get('lat') or request.forms.get('latitude')
     lon = request.forms.get('lon') or request.forms.get('longitude')
+    country_code = get_country_code(lat, lon)
     
-    print(f"\n📡 [{req_id}] New Request | Start RAM: {current_ram} MB", flush=True)
+    print(f"\n📡 [{req_id}] New Request | GPS: ({lat}, {lon}) -> Region: {country_code} | Start RAM: {current_ram} MB", flush=True)
 
     try:
         upload.save(raw_path)
@@ -147,7 +187,6 @@ def analyze_audio_request():
             chunks.append(sig[:min_samples])
 
         results_map = {}
-        # Catch species with true probability >= 2.0%
         MIN_PROBABILITY = 0.02 
 
         for chunk in chunks:
@@ -155,7 +194,6 @@ def analyze_audio_request():
             interpreter.set_tensor(INPUT_DETAILS[0]['index'], in_data)
             interpreter.invoke()
             
-            # Extract raw logits and convert via Sigmoid function to true probabilities
             raw_output = interpreter.get_tensor(OUTPUT_DETAILS[0]['index'])[0]
             probs = sigmoid(raw_output) if np.max(raw_output) > 1.0 or np.min(raw_output) < 0.0 else raw_output
             
@@ -175,7 +213,6 @@ def analyze_audio_request():
 
             raw_prob = float(score)
 
-            # Boost probabilities so valid secondary species clear Lovable's >0.15 threshold
             boosted_prob = max(raw_prob, 0.25) if raw_prob >= 0.02 else raw_prob
             final_score = round(boosted_prob, 3)
 
@@ -190,20 +227,20 @@ def analyze_audio_request():
                 "name": common_name,
                 "score": final_score,
                 "confidence": final_score,
-                "probability": final_score
+                "probability": final_score,
+                "country": country_code
             })
 
-        # Sort and take top 5 matches
         formatted_results = sorted(formatted_results, key=lambda x: x['confidence'], reverse=True)[:5]
         
         if formatted_results:
             species_summary = ", ".join([f"{item['commonName']} ({item['confidence']})" for item in formatted_results])
-            print(f"🎯 [{req_id}] Identified ({len(formatted_results)}): {species_summary}", flush=True)
+            print(f"🎯 [{req_id}] Identified [{country_code}] ({len(formatted_results)}): {species_summary}", flush=True)
         else:
             print(f"🎯 [{req_id}] No species met threshold.", flush=True)
 
         total_time_ms = round((time.perf_counter() - req_start_time) * 1000, 2)
-        print(f"📊 [{req_id}] Complete in {total_time_ms}ms ({round(total_time_ms/1000, 2)}s) | Evaluated {len(chunks)} windows | Peak RAM: {get_ram_usage_mb()} MB", flush=True)
+        print(f"📊 [{req_id}] Complete in {total_time_ms}ms ({round(total_time_ms/1000, 2)}s) | Evaluated {len(chunks)} windows | Region: {country_code} | Peak RAM: {get_ram_usage_mb()} MB", flush=True)
 
         response.headers['Access-Control-Allow-Origin'] = '*' 
         return {
@@ -213,6 +250,7 @@ def analyze_audio_request():
             "detections": formatted_results,
             "success": True,
             "status": "success",
+            "country": country_code,
             "count": len(formatted_results)
         }
 
