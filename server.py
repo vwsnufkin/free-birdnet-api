@@ -1,6 +1,4 @@
 import os
-# Set permanent model path before importing birdnet_analyzer
-os.environ['BIRDNET_MODEL_PATH'] = '/app/birdnet_models'
 os.environ['OMP_NUM_THREADS'] = '1'
 os.environ['TF_NUM_INTRAOP_THREADS'] = '1'
 os.environ['TF_NUM_INTEROP_THREADS'] = '1'
@@ -12,7 +10,6 @@ import shutil
 import glob
 import uuid
 import gc
-import runpy
 from bottle import route, run, request, response
 
 IS_BUSY = False
@@ -80,29 +77,20 @@ def analyze_audio_request():
 
         print(f"🚀 [{req_id[:8]}] Launching Cornell AI engine with GPS filtering...", flush=True)
         
-        old_argv = sys.argv
-        
-        # Explicit arguments targeting local model path
-        sys.argv = [
-            "birdnet_analyzer.analyze",
+        cmd = [
+            sys.executable, "-m", "birdnet_analyzer.analyze",
             "-o", out_dir,
             "--rtype", "csv",
             "--lat", str(user_lat),
             "--lon", str(user_lon),
-            "--min_conf", "0.15",
+            "--min_conf", "0.05",
             "-t", "1",
             wav_path
         ]
 
-        try:
-            runpy.run_module('birdnet_analyzer.analyze', run_name='__main__')
-            print(f"✅ [{req_id[:8]}] AI Engine finished processing cleanly.", flush=True)
-        except SystemExit:
-            pass
-        except Exception as e:
-            print(f"❌ Execution error: {e}", flush=True)
-        finally:
-            sys.argv = old_argv
+        # Execute analysis securely as a subprocess
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        print(f"✅ [{req_id[:8]}] AI Engine finished processing cleanly.", flush=True)
 
         results = []
         if os.path.exists(out_dir):
@@ -122,7 +110,7 @@ def analyze_audio_request():
                 response.headers['Access-Control-Allow-Origin'] = '*' 
                 return {"results": results}
             
-        print(f"⚠️ [{req_id[:8]}] No CSV results generated (no bird vocalizations detected above 15% confidence).", flush=True)
+        print(f"⚠️ [{req_id[:8]}] No CSV results generated.", flush=True)
         response.headers['Access-Control-Allow-Origin'] = '*' 
         return {"results": []}
 
@@ -135,5 +123,5 @@ def analyze_audio_request():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
-    print(f"🟢 Pre-baked model server booting on port {port}...", flush=True)
+    print(f"🟢 Isolated process server booting on port {port}...", flush=True)
     run(host='0.0.0.0', port=port)
