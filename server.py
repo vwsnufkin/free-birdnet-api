@@ -141,17 +141,33 @@ def analyze_audio_request():
         formatted_results = []
         for label, score in results_map.items():
             parts = label.split('_')
+            species_code = parts[0] if len(parts) > 0 else label
+            common_name = parts[1] if len(parts) > 1 else label
+            scientific_name = parts[2] if len(parts) > 2 else common_name
+
             formatted_results.append({
-                "speciesCode": parts[0] if len(parts) > 0 else label,
-                "commonName": parts[1] if len(parts) > 1 else label,
-                "score": round(score, 3)
+                # Standard API Format
+                "speciesCode": species_code,
+                "commonName": common_name,
+                "scientificName": scientific_name,
+                "score": round(score, 3),
+                
+                # Compatibility Fallbacks for various Frontend Schemas
+                "common_name": common_name,
+                "scientific_name": scientific_name,
+                "confidence": round(score, 3),
+                "name": common_name
             })
 
         formatted_results = sorted(formatted_results, key=lambda x: x['score'], reverse=True)[:5]
         print(f"🎯 [{req_id}] Classification complete. Identified {len(formatted_results)} species.", flush=True)
 
         response.headers['Access-Control-Allow-Origin'] = '*' 
-        return {"results": formatted_results}
+        return {
+            "results": formatted_results,
+            "predictions": formatted_results,
+            "success": True
+        }
 
     except Exception as e:
         print(f"❌ [{req_id}] Processing error: {str(e)}", flush=True)
