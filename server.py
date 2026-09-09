@@ -78,7 +78,6 @@ def analyze_audio_request():
         print(f"✅ [{req_id[:8]}] Audio file saved. Converting format...", flush=True)
 
         try:
-            # Convert audio to 48kHz mono WAV with ffmpeg
             subprocess.run(["ffmpeg", "-y", "-i", raw_path, "-filter:a", "volume=5dB", "-ar", "48000", "-ac", "1", wav_path], check=True, capture_output=True)
             print(f"✅ [{req_id[:8]}] Audio successfully converted.", flush=True)
         except subprocess.CalledProcessError as e:
@@ -89,26 +88,20 @@ def analyze_audio_request():
         
         os.makedirs(out_dir, exist_ok=True)
 
-        # Intercept sys.exit so internal CLI parser doesn't terminate Bottle
         old_exit = sys.exit
         sys.exit = lambda code=0: None
 
-        # Set sys.argv arguments for the analyze function call
-        old_argv = sys.argv
-        sys.argv = [
-            "birdnet_analyzer.analyze",
-            "-o", out_dir,
-            "--rtype", "csv",
-            "--lat", str(user_lat),
-            "--lon", str(user_lon),
-            "--min_conf", "0.05",
-            "-t", "1",
-            wav_path
-        ]
-
         try:
-            # Execute analysis directly
-            analyze()
+            # Pass wav_path as the positional audio_input argument
+            analyze(
+                wav_path,
+                output=out_dir,
+                rtype=['csv'],
+                lat=user_lat,
+                lon=user_lon,
+                min_conf=0.05,
+                threads=1
+            )
             print(f"✅ [{req_id[:8]}] AI Engine finished processing cleanly.", flush=True)
         except SystemExit:
             pass
@@ -116,7 +109,6 @@ def analyze_audio_request():
             print(f"⚠️ Inference info: {e}", flush=True)
         finally:
             sys.exit = old_exit
-            sys.argv = old_argv
 
         results = []
         if os.path.exists(out_dir):
