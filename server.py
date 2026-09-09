@@ -14,15 +14,10 @@ import gc
 import subprocess
 from bottle import route, run, request, response
 
-# Import BirdNET modules into main process
-import birdnet_analyzer.analyze as analyzer
-import birdnet_analyzer.config as cfg
+# Import BirdNET analyzer function directly
+from birdnet_analyzer.analyze import analyze
 
 IS_BUSY = False
-
-# Configure internal config parameters to conserve RAM
-cfg.THREADS = 1
-cfg.BATCH_SIZE = 1
 
 @route('/ping', method=['GET', 'OPTIONS'])
 def ping_server():
@@ -94,22 +89,26 @@ def analyze_audio_request():
         
         os.makedirs(out_dir, exist_ok=True)
 
-        # Intercept sys.exit so analyzer doesn't stop the Bottle server
+        # Intercept sys.exit so internal CLI parser doesn't terminate Bottle
         old_exit = sys.exit
         sys.exit = lambda code=0: None
 
-        try:
-            # Set internal variables directly
-            cfg.FILE_PATH = wav_path
-            cfg.OUTPUT_PATH = out_dir
-            cfg.LATITUDE = user_lat
-            cfg.LONGITUDE = user_lon
-            cfg.MIN_CONFIDENCE = 0.05
-            cfg.RESULT_TYPES = ['csv']
+        # Set sys.argv arguments for the analyze function call
+        old_argv = sys.argv
+        sys.argv = [
+            "birdnet_analyzer.analyze",
+            "-o", out_dir,
+            "--rtype", "csv",
+            "--lat", str(user_lat),
+            "--lon", str(user_lon),
+            "--min_conf", "0.05",
+            "-t", "1",
+            wav_path
+        ]
 
-            # Run in-process analysis
-            analyzer.analyze_file((wav_path, out_dir, 0.05, user_lat, user_lon, -1, 0.15, None, 1.0, 0.0, True, False, False, False)) if hasattr(analyzer, 'analyze_file') else analyzer.main()
-            
+        try:
+            # Execute analysis directly
+            analyze()
             print(f"✅ [{req_id[:8]}] AI Engine finished processing cleanly.", flush=True)
         except SystemExit:
             pass
@@ -117,6 +116,7 @@ def analyze_audio_request():
             print(f"⚠️ Inference info: {e}", flush=True)
         finally:
             sys.exit = old_exit
+            sys.argv = old_argv
 
         results = []
         if os.path.exists(out_dir):
