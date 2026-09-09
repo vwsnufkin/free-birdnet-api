@@ -1,9 +1,13 @@
 import os
-# Force TensorFlow/ONNX to run strictly single-threaded to cap memory under 300MB
+# Match model cache paths established in Dockerfile
+os.environ['BIRDNET_MODEL_PATH'] = '/app/model_cache'
+os.environ['XDG_CACHE_HOME'] = '/app/model_cache'
+os.environ['TORCH_HOME'] = '/app/model_cache'
+os.environ['HF_HOME'] = '/app/model_cache'
+
 os.environ['OMP_NUM_THREADS'] = '1'
 os.environ['TF_NUM_INTRAOP_THREADS'] = '1'
 os.environ['TF_NUM_INTEROP_THREADS'] = '1'
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 import csv
 import sys
@@ -14,10 +18,24 @@ import gc
 import subprocess
 from bottle import route, run, request, response
 
-# Import BirdNET analyzer function directly
-from birdnet_analyzer.analyze import analyze
-
 IS_BUSY = False
+
+def run_isolated_birdnet(wav_path, out_dir, lat, lon):
+    """Run BirdNET CLI module in a dedicated sub-process to prevent sys.exit from killing Bottle."""
+    cmd = [
+        sys.executable, "-m", "birdnet_analyzer.analyze",
+        "-o", out_dir,
+        "--rtype", "csv",
+        "--lat", str(lat),
+        "--lon", str(lon),
+        "--min_conf", "0.05",
+        "-t", "1",
+        wav_path
+    ]
+    env = os.environ.copy()
+    env['XDG_CACHE_HOME'] = '/app/model_cache'
+    env['BIRDNET_MODEL_PATH'] = '/app/model_cache'
+    return subprocess.run(cmd, capture_output=True, text=True, env=env)
 
 @route('/ping', method=['GET', 'OPTIONS'])
 def ping_server():
@@ -84,31 +102,13 @@ def analyze_audio_request():
             response.headers['Access-Control-Allow-Origin'] = '*'
             return {"error": f"Audio Conversion Failed: {e.stderr.decode()}"}
 
-        print(f"🚀 [{req_id[:8]}] Running BirdNET direct inference...", flush=True)
-        
+        print(f"🚀 [{req_id[:8]}] Running isolated BirdNET engine...", flush=True)
         os.makedirs(out_dir, exist_ok=True)
 
-        old_exit = sys.exit
-        sys.exit = lambda code=0: None
-
-        try:
-            # Pass wav_path as the positional audio_input argument
-            analyze(
-                wav_path,
-                output=out_dir,
-                rtype=['csv'],
-                lat=user_lat,
-                lon=user_lon,
-                min_conf=0.05,
-                threads=1
-            )
-            print(f"✅ [{req_id[:8]}] AI Engine finished processing cleanly.", flush=True)
-        except SystemExit:
-            pass
-        except Exception as e:
-            print(f"⚠️ Inference info: {e}", flush=True)
-        finally:
-            sys.exit = old_exit
+        # Run inference in subprocess
+        proc = run_isolated_birdnet(wav_path, out_dir, user_lat, user_lon)
+        
+        print(f"✅ [{req_id[:8]}] AI Engine finished processing cleanly.", flush=True)
 
         results = []
         if os.path.exists(out_dir):
@@ -141,5 +141,5 @@ def analyze_audio_request():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
-    print(f"🟢 Direct memory-capped BirdNET server booting on port {port}...", flush=True)
+    print(f"🟢 Isolated-process BirdNET server booting on port {port}...", flush=True)
     run(host='0.0.0.0', port=port)
