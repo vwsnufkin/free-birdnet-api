@@ -23,6 +23,13 @@ INPUT_DETAILS = None
 OUTPUT_DETAILS = None
 SPECIES_LABELS = []
 
+# Exclusive non-European family keywords to filter out false positives in Europe
+NON_EUROPEAN_KEYWORDS = [
+    'antpitta', 'cupwing', 'hummingbird', 'toucan', 'tanager', 'antbird', 
+    'sunbird', 'tody', 'woodcreeper', 'manakin', 'cotinga', 'motmot', 
+    'puffbird', 'jacamar', 'hornero', 'spinetail', 'barbet', 'honeyeater'
+]
+
 def get_ram_usage_mb():
     """Returns current process RAM usage in megabytes."""
     try:
@@ -68,6 +75,15 @@ def get_country_code(lat, lon):
         return "US"
 
     return "Global"
+
+def is_species_plausible_for_region(common_name, region_code, raw_prob):
+    """Filters out obvious non-native families for low/medium confidence detections."""
+    if region_code in ["BE", "NL", "FR", "DE", "UK", "EU"]:
+        name_lower = common_name.lower()
+        # If confidence is below 80% and it's a known endemic South American / Asian family, reject it
+        if raw_prob < 0.80 and any(keyword in name_lower for keyword in NON_EUROPEAN_KEYWORDS):
+            return False
+    return True
 
 def load_labels():
     global SPECIES_LABELS
@@ -156,7 +172,6 @@ def analyze_audio_request():
     try:
         upload.save(raw_path)
 
-        # 10dB volume boost
         subprocess.run([
             "ffmpeg", "-y", "-threads", "1", "-i", raw_path, 
             "-filter:a", "volume=10dB", 
@@ -212,6 +227,10 @@ def analyze_audio_request():
             scientific_name = parts[2] if len(parts) > 2 else common_name
 
             raw_prob = float(score)
+
+            # Apply geographical sanity filter
+            if not is_species_plausible_for_region(common_name, country_code, raw_prob):
+                continue
 
             boosted_prob = max(raw_prob, 0.25) if raw_prob >= 0.02 else raw_prob
             final_score = round(boosted_prob, 3)
