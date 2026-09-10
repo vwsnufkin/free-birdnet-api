@@ -5,6 +5,8 @@ import sys
 import uuid
 import gc
 import time
+import json
+import urllib.request
 import subprocess
 import resource
 import numpy as np
@@ -17,18 +19,14 @@ MAX_RAM_THRESHOLD_MB = 312.0
 
 MODEL_PATH = '/app/models/model.tflite'
 LABELS_PATH = '/app/models/labels.txt'
+LOCATION_FILE_PATH = '/app/models/labels_location.json'
+LOCATION_JSON_URL = "https://raw.githubusercontent.com/kahst/BirdNET-Analyzer/main/birdnet_analyzer/labels/labels_location.json"
 
 INTERPRETER = None
 INPUT_DETAILS = None
 OUTPUT_DETAILS = None
 SPECIES_LABELS = []
-
-# Exclusive non-European family keywords to filter out false positives in Europe
-NON_EUROPEAN_KEYWORDS = [
-    'antpitta', 'cupwing', 'hummingbird', 'toucan', 'tanager', 'antbird', 
-    'sunbird', 'tody', 'woodcreeper', 'manakin', 'cotinga', 'motmot', 
-    'puffbird', 'jacamar', 'hornero', 'spinetail', 'barbet', 'honeyeater'
-]
+LOCATION_GRID = {}  # Global in-memory spatial index loaded once at boot
 
 def get_ram_usage_mb():
     """Returns current process RAM usage in megabytes."""
@@ -37,53 +35,54 @@ def get_ram_usage_mb():
     except Exception:
         return 0.0
 
-def get_country_code(lat, lon):
-    """Fast, zero-dependency bounding box lookup for GPS coordinates."""
-    if lat is None or lon is None:
-        return "Global"
+def load_location_data():
+    """Loads or downloads BirdNET's official labels_location.json once at startup."""
+    global LOCATION_GRID
+    if LOCATION_GRID:
+        return
+
+    # Download file if missing in /app/models/
+    if not os.path.exists(LOCATION_FILE_PATH):
+        try:
+            print(f"📥 Downloading official BirdNET labels_location.json...", flush=True)
+            urllib.request.urlretrieve(LOCATION_JSON_URL, LOCATION_FILE_PATH)
+            print("✅ Download complete.", flush=True)
+        except Exception as e:
+            print(f"⚠️ Could not download location JSON: {e}. Defaulting to global mode.", flush=True)
+            return
+
+    if os.path.exists(LOCATION_FILE_PATH):
+        try:
+            with open(LOCATION_FILE_PATH, 'r', encoding='utf-8') as f:
+                LOCATION_GRID = json.load(f)
+            print(f"✅ Loaded BirdNET location grid ({len(LOCATION_GRID)} cells). [RAM: {get_ram_usage_mb()} MB]", flush=True)
+        except Exception as e:
+            print(f"⚠️ Error loading location grid: {e}", flush=True)
+
+def get_regional_species_set(lat, lon):
+    """
+    Returns the set of valid species codes for a specific lat/lon coordinate.
+    Rounds lat/lon to the nearest 4-degree grid cell used by BirdNET location tables.
+    """
+    if lat is None or lon is None or not LOCATION_GRID:
+        return None
+
     try:
         lat, lon = float(lat), float(lon)
     except (ValueError, TypeError):
-        return "Global"
+        return None
 
-    # Western Europe (BE, NL, FR, DE, UK, etc.)
-    if 35.0 <= lat <= 60.0 and -10.0 <= lon <= 30.0:
-        if 49.5 <= lat <= 51.5 and 2.5 <= lon <= 6.5:
-            return "BE"
-        elif 50.7 <= lat <= 53.6 and 3.3 <= lon <= 7.2:
-            return "NL"
-        elif 41.3 <= lat <= 51.1 and -5.1 <= lon <= 9.6:
-            return "FR"
-        elif 47.3 <= lat <= 55.1 and 5.8 <= lon <= 15.0:
-            return "DE"
-        elif 49.9 <= lat <= 60.9 and -8.6 <= lon <= 1.8:
-            return "UK"
-        return "EU"
+    # Map coordinates to 4-degree grid keys (e.g., "52_4")
+    grid_lat = int(round(lat / 4.0) * 4)
+    grid_lon = int(round(lon / 4.0) * 4)
+    grid_key = f"{grid_lat}_{grid_lon}"
 
-    # South America (BR, AR, CO, PE, CL, etc.)
-    if -56.0 <= lat <= 13.0 and -82.0 <= lon <= -34.0:
-        if -33.7 <= lat <= 5.3 and -73.9 <= lon <= -34.7:
-            return "BR"
-        elif -55.1 <= lat <= -21.8 and -73.6 <= lon <= -53.6:
-            return "AR"
-        elif -4.2 <= lat <= 12.5 and -79.0 <= lon <= -66.8:
-            return "CO"
-        return "SA"
-
-    # North America
-    if 24.5 <= lat <= 49.0 and -125.0 <= lon <= -66.9:
-        return "US"
-
-    return "Global"
-
-def is_species_plausible_for_region(common_name, region_code, raw_prob):
-    """Filters out obvious non-native families for low/medium confidence detections."""
-    if region_code in ["BE", "NL", "FR", "DE", "UK", "EU"]:
-        name_lower = common_name.lower()
-        # If confidence is below 80% and it's a known endemic South American / Asian family, reject it
-        if raw_prob < 0.80 and any(keyword in name_lower for keyword in NON_EUROPEAN_KEYWORDS):
-            return False
-    return True
+    # Return allowed species list for this specific user location
+    allowed_list = LOCATION_GRID.get(grid_key)
+    if allowed_list:
+        return set(allowed_list)
+    
+    return None
 
 def load_labels():
     global SPECIES_LABELS
@@ -165,9 +164,11 @@ def analyze_audio_request():
 
     lat = request.forms.get('lat') or request.forms.get('latitude')
     lon = request.forms.get('lon') or request.forms.get('longitude')
-    country_code = get_country_code(lat, lon)
     
-    print(f"\n📡 [{req_id}] New Request | GPS: ({lat}, {lon}) -> Region: {country_code} | Start RAM: {current_ram} MB", flush=True)
+    allowed_species_set = get_regional_species_set(lat, lon)
+    is_filtered = allowed_species_set is not None
+    
+    print(f"\n📡 [{req_id}] New Request | GPS: ({lat}, {lon}) | Location Filter Active: {is_filtered} | Start RAM: {current_ram} MB", flush=True)
 
     try:
         upload.save(raw_path)
@@ -226,14 +227,13 @@ def analyze_audio_request():
             common_name = parts[1] if len(parts) > 1 else label
             scientific_name = parts[2] if len(parts) > 2 else common_name
 
-            raw_prob = float(score)
-
-            # Apply geographical sanity filter
-            if not is_species_plausible_for_region(common_name, country_code, raw_prob):
+            # Per-Request Regional Filter:
+            # If coordinates are valid, discard species not native to this user's grid cell unless certainty > 85%
+            if is_filtered and species_code not in allowed_species_set and score < 0.85:
                 continue
 
-            boosted_prob = max(raw_prob, 0.25) if raw_prob >= 0.02 else raw_prob
-            final_score = round(boosted_prob, 3)
+            raw_prob = float(score)
+            final_score = round(raw_prob, 3)
 
             formatted_results.append({
                 "speciesCode": species_code,
@@ -246,20 +246,19 @@ def analyze_audio_request():
                 "name": common_name,
                 "score": final_score,
                 "confidence": final_score,
-                "probability": final_score,
-                "country": country_code
+                "probability": final_score
             })
 
         formatted_results = sorted(formatted_results, key=lambda x: x['confidence'], reverse=True)[:5]
         
         if formatted_results:
             species_summary = ", ".join([f"{item['commonName']} ({item['confidence']})" for item in formatted_results])
-            print(f"🎯 [{req_id}] Identified [{country_code}] ({len(formatted_results)}): {species_summary}", flush=True)
+            print(f"🎯 [{req_id}] Identified ({len(formatted_results)}): {species_summary}", flush=True)
         else:
             print(f"🎯 [{req_id}] No species met threshold.", flush=True)
 
         total_time_ms = round((time.perf_counter() - req_start_time) * 1000, 2)
-        print(f"📊 [{req_id}] Complete in {total_time_ms}ms ({round(total_time_ms/1000, 2)}s) | Evaluated {len(chunks)} windows | Region: {country_code} | Peak RAM: {get_ram_usage_mb()} MB", flush=True)
+        print(f"📊 [{req_id}] Complete in {total_time_ms}ms ({round(total_time_ms/1000, 2)}s) | Evaluated {len(chunks)} windows | Location Filter: {is_filtered} | Peak RAM: {get_ram_usage_mb()} MB", flush=True)
 
         response.headers['Access-Control-Allow-Origin'] = '*' 
         return {
@@ -269,7 +268,6 @@ def analyze_audio_request():
             "detections": formatted_results,
             "success": True,
             "status": "success",
-            "country": country_code,
             "count": len(formatted_results)
         }
 
@@ -291,5 +289,6 @@ if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
     print(f"🟢 Direct TFLite BirdNET server booting on port {port}...", flush=True)
     load_labels()
+    load_location_data()
     init_tflite_interpreter()
     run(host='0.0.0.0', port=port)
