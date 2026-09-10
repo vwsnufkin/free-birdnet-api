@@ -55,14 +55,15 @@ def load_location_data():
         try:
             with open(LOCATION_FILE_PATH, 'r', encoding='utf-8') as f:
                 LOCATION_GRID = json.load(f)
-            print(f"✅ Loaded BirdNET location grid ({len(LOCATION_GRID)} cells). [RAM: {get_ram_usage_mb()} MB]", flush=True)
+            sample_keys = list(LOCATION_GRID.keys())[:5] if isinstance(LOCATION_GRID, dict) else []
+            print(f"✅ Loaded location grid ({len(LOCATION_GRID)} entries). Sample keys: {sample_keys} [RAM: {get_ram_usage_mb()} MB]", flush=True)
         except Exception as e:
             print(f"⚠️ Error loading location grid: {e}", flush=True)
 
 def get_regional_species_set(lat, lon):
     """
     Returns the set of valid species codes for a specific lat/lon coordinate.
-    Rounds lat/lon to the nearest 4-degree grid cell used by BirdNET location tables.
+    Tests integer, floating-point, and padded key formats against BirdNET location grid keys.
     """
     if lat is None or lon is None or not LOCATION_GRID:
         return None
@@ -72,16 +73,23 @@ def get_regional_species_set(lat, lon):
     except (ValueError, TypeError):
         return None
 
-    # Map coordinates to 4-degree grid keys (e.g., "52_4")
+    # Calculate 4-degree grid center
     grid_lat = int(round(lat / 4.0) * 4)
     grid_lon = int(round(lon / 4.0) * 4)
-    grid_key = f"{grid_lat}_{grid_lon}"
 
-    # Return allowed species list for this specific user location
-    allowed_list = LOCATION_GRID.get(grid_key)
-    if allowed_list:
-        return set(allowed_list)
-    
+    # Test candidate key structures matching various BirdNET JSON releases
+    candidate_keys = [
+        f"{grid_lat}_{grid_lon}",
+        f"{float(grid_lat)}_{float(grid_lon)}",
+        f"{grid_lat:.1f}_{grid_lon:.1f}",
+        f"{lat:.1f}_{lon:.1f}",
+        f"{int(lat)}_{int(lon)}"
+    ]
+
+    for key in candidate_keys:
+        if key in LOCATION_GRID:
+            return set(LOCATION_GRID[key])
+            
     return None
 
 def load_labels():
@@ -162,8 +170,8 @@ def analyze_audio_request():
     raw_path = f'/tmp/raw_{req_id}'
     wav_path = f'/tmp/rec_{req_id}.wav'
 
-    lat = request.forms.get('lat') or request.forms.get('latitude')
-    lon = request.forms.get('lon') or request.forms.get('longitude')
+    lat = request.forms.get('lat') or request.forms.get('latitude') or request.params.get('lat') or request.params.get('latitude')
+    lon = request.forms.get('lon') or request.forms.get('longitude') or request.params.get('lon') or request.params.get('longitude')
     
     allowed_species_set = get_regional_species_set(lat, lon)
     is_filtered = allowed_species_set is not None
@@ -228,7 +236,7 @@ def analyze_audio_request():
             scientific_name = parts[2] if len(parts) > 2 else common_name
 
             # Per-Request Regional Filter:
-            # If coordinates are valid, discard species not native to this user's grid cell unless certainty > 85%
+            # If coordinates match a valid location key, discard non-native species unless score > 85%
             if is_filtered and species_code not in allowed_species_set and score < 0.85:
                 continue
 
