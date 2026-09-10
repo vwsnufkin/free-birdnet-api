@@ -20,7 +20,13 @@ MAX_RAM_THRESHOLD_MB = 312.0
 MODEL_PATH = '/app/models/model.tflite'
 LABELS_PATH = '/app/models/labels.txt'
 LOCATION_FILE_PATH = '/app/models/labels_location.json'
-LOCATION_JSON_URL = "https://raw.githubusercontent.com/kahst/BirdNET-Analyzer/main/birdnet_analyzer/labels/labels_location.json"
+
+# Primary & Fallback URLs for BirdNET Location JSON
+LOCATION_JSON_URLS = [
+    "https://raw.githubusercontent.com/birdnet-team/BirdNET-Analyzer/main/birdnet_analyzer/labels/V2.4/BirdNET_GLOBAL_6K_V2.4_Labels_Discount.json",
+    "https://raw.githubusercontent.com/kahst/BirdNET-Analyzer/main/birdnet_analyzer/labels/V2.4/BirdNET_GLOBAL_6K_V2.4_Labels_Discount.json",
+    "https://raw.githubusercontent.com/birdnet-team/BirdNET-Analyzer/main/birdnet_analyzer/labels/V2.2/BirdNET_GLOBAL_6K_V2.2_Labels_Discount.json"
+]
 
 INTERPRETER = None
 INPUT_DETAILS = None
@@ -36,19 +42,30 @@ def get_ram_usage_mb():
         return 0.0
 
 def load_location_data():
-    """Loads or downloads BirdNET's official labels_location.json once at startup."""
+    """Loads or downloads BirdNET's official location JSON once at startup."""
     global LOCATION_GRID
     if LOCATION_GRID:
         return
 
     # Download file if missing in /app/models/
     if not os.path.exists(LOCATION_FILE_PATH):
-        try:
-            print(f"📥 Downloading official BirdNET labels_location.json...", flush=True)
-            urllib.request.urlretrieve(LOCATION_JSON_URL, LOCATION_FILE_PATH)
-            print("✅ Download complete.", flush=True)
-        except Exception as e:
-            print(f"⚠️ Could not download location JSON: {e}. Defaulting to global mode.", flush=True)
+        print(f"📥 Downloading official BirdNET location grid...", flush=True)
+        download_success = False
+        
+        for url in LOCATION_JSON_URLS:
+            try:
+                print(f"🔗 Trying URL: {url}", flush=True)
+                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req, timeout=10) as resp, open(LOCATION_FILE_PATH, 'wb') as out_file:
+                    out_file.write(resp.read())
+                print("✅ Download complete.", flush=True)
+                download_success = True
+                break
+            except Exception as e:
+                print(f"⚠️ Failed URL {url}: {e}", flush=True)
+
+        if not download_success:
+            print("⚠️ Could not download location JSON from any mirror. Defaulting to global mode.", flush=True)
             return
 
     if os.path.exists(LOCATION_FILE_PATH):
@@ -63,7 +80,7 @@ def load_location_data():
 def get_regional_species_set(lat, lon):
     """
     Returns the set of valid species codes for a specific lat/lon coordinate.
-    Tests integer, floating-point, and padded key formats against BirdNET location grid keys.
+    Tests integer, floating-point, and grid cell key formats against the location grid.
     """
     if lat is None or lon is None or not LOCATION_GRID:
         return None
