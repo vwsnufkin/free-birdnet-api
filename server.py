@@ -28,6 +28,9 @@ SPECIES_LABELS = []
 # Memory cache for country species sets from eBird API
 REGION_SPECIES_CACHE = {}
 
+# Retrieve eBird API Key from Render environment variables
+EBIRD_API_KEY = os.environ.get('EBIRD_API_KEY', '')
+
 def get_ram_usage_mb():
     """Returns current process RAM usage in megabytes."""
     try:
@@ -66,24 +69,34 @@ def get_country_code(lat, lon):
     return "GLOBAL"
 
 def get_ebird_species_for_region(country_code):
-    """Fetches official native species codes for a country from eBird API and caches in memory."""
+    """Fetches official native species codes for a country from eBird API with token auth."""
     if not country_code or country_code == "GLOBAL":
         return None
 
     if country_code in REGION_SPECIES_CACHE:
         return REGION_SPECIES_CACHE[country_code]
 
+    if not EBIRD_API_KEY:
+        print(f"ℹ️ EBIRD_API_KEY environment variable not set. Running in standard mode.", flush=True)
+        return None
+
     try:
         url = f"https://api.ebird.org/v2/product/spplist/{country_code}"
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        headers = {
+            'User-Agent': 'Mozilla/5.0',
+            'x-ebirdapitoken': EBIRD_API_KEY
+        }
+        req = urllib.request.Request(url, headers=headers)
+        
+        # Strict 1.5s timeout so API calls never delay audio inference
+        with urllib.request.urlopen(req, timeout=1.5) as resp:
             species_list = json.loads(resp.read().decode('utf-8'))
             species_set = {s.lower() for s in species_list}
             REGION_SPECIES_CACHE[country_code] = species_set
             print(f"🌍 eBird species list cached for {country_code}: {len(species_set)} native species.", flush=True)
             return species_set
     except Exception as e:
-        print(f"⚠️ eBird API fetch failed for {country_code}: {e}", flush=True)
+        print(f"⚠️ eBird API fetch error for {country_code}: {e}", flush=True)
         return None
 
 def load_labels():
